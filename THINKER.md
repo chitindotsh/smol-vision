@@ -1,20 +1,36 @@
 # Thinker Mode
 
-Thinker mode uses the Qwen3-Omni-30B MoE decoder for free-form text generation
-instead of ASR transcription. It accepts text input, audio input, or both.
+Thinker mode uses the Qwen2.5-Omni-7B or Qwen3-Omni-30B decoder for free-form
+text generation instead of ASR transcription. It accepts text input, audio input,
+or both. The model family is auto-detected from the weight files.
+
+## Supported Models
+
+| Model | Size | Type | Notes |
+|-------|------|------|-------|
+| Qwen2.5-Omni-7B | ~14 GB | Dense | Conv1D encoder, biased QKV, separate lm_head |
+| Qwen3-Omni-30B | ~60 GB | MoE | Conv2D encoder, 128 experts, use `--moe-preload` |
 
 ## Quick Start
 
 ```bash
-# Text-only chat
+# Text-only chat (7B — no --moe-preload needed)
+./qwen_asr -d qwen2.5-omni-7b --thinker --text "What is 2+2?" \
+  --prompt "You are a helpful assistant"
+
+# Audio question-answering (7B)
+./qwen_asr -d qwen2.5-omni-7b --thinker -i question.wav \
+  --prompt "Answer the user's question"
+
+# Text-only chat (30B MoE)
 ./qwen_asr -d qwen3-omni-30b --thinker --text "What is 2+2?" \
   --prompt "You are a helpful assistant" --moe-preload
 
-# Audio question-answering
+# Audio question-answering (30B MoE)
 ./qwen_asr -d qwen3-omni-30b --thinker -i question.wav \
   --prompt "Answer the user's question" --moe-preload
 
-# Audio + text combined
+# Audio + text combined (30B MoE)
 ./qwen_asr -d qwen3-omni-30b --thinker -i meeting.wav \
   --text "Summarize this audio" --moe-preload
 ```
@@ -78,6 +94,8 @@ echo "The answer is: $ANSWER"
 
 ## Notes
 
+- **Qwen2.5-Omni-7B** is a good default for thinker mode — it runs on ~14 GB
+  RAM and produces high-quality responses with no special flags needed.
 - `--moe-preload` is recommended for the 30B MoE model. It pre-faults all
   expert weight pages into RAM, avoiding page-fault stalls during generation.
   This requires ~60 GB of available memory.
@@ -85,3 +103,5 @@ echo "The answer is: $ANSWER"
   in the `<|im_start|>system` turn of the chat template.
 - Generation stops at `<|im_end|>` or `<|endoftext|>` tokens, or when
   `--max-tokens` is reached.
+- The model family is auto-detected from weight files (Qwen2.5-Omni uses
+  Conv1D encoder + learned audio boundary tokens; Qwen3-Omni uses Conv2D).

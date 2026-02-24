@@ -589,6 +589,57 @@ static void im2col(const float *in, float *cols,
     }
 }
 
+void qwen_conv1d(float *out, const float *in, const float *weight, const float *bias,
+                 int c_in, int c_out, int l_in, int k, int stride, int padding) {
+    int l_out = (l_in + 2 * padding - k) / stride + 1;
+    int patch_size = c_in * k;
+
+    /* im2col for 1D: build column matrix [patch_size, l_out] */
+    float *cols = (float *)calloc((size_t)patch_size * l_out, sizeof(float));
+    for (int ci = 0; ci < c_in; ci++) {
+        for (int ki = 0; ki < k; ki++) {
+            int col_row = ci * k + ki;
+            for (int ol = 0; ol < l_out; ol++) {
+                int il = ol * stride + ki - padding;
+                if (il >= 0 && il < l_in) {
+                    cols[col_row * l_out + ol] = in[ci * l_in + il];
+                }
+            }
+        }
+    }
+
+    /* GEMM: weight[c_out, patch_size] @ cols[patch_size, l_out] = out[c_out, l_out] */
+#ifdef USE_BLAS
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                c_out, l_out, patch_size,
+                1.0f, weight, patch_size, cols, l_out,
+                0.0f, out, l_out);
+#else
+    for (int oc = 0; oc < c_out; oc++) {
+        for (int ol = 0; ol < l_out; ol++) {
+            float sum = 0.0f;
+            for (int p = 0; p < patch_size; p++) {
+                sum += weight[oc * patch_size + p] * cols[p * l_out + ol];
+            }
+            out[oc * l_out + ol] = sum;
+        }
+    }
+#endif
+
+    free(cols);
+
+    /* Add bias */
+    if (bias) {
+        for (int oc = 0; oc < c_out; oc++) {
+            float b = bias[oc];
+            float *row = out + oc * l_out;
+            for (int ol = 0; ol < l_out; ol++) {
+                row[ol] += b;
+            }
+        }
+    }
+}
+
 void qwen_conv2d(float *out, const float *in, const float *weight, const float *bias,
                  int c_in, int c_out, int h_in, int w_in,
                  int kh, int kw, int stride, int padding) {

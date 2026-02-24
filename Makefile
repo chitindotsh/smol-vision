@@ -9,7 +9,7 @@ LDFLAGS = -lm -lpthread
 UNAME_S := $(shell uname -s)
 
 # Source files
-SRCS = qwen_asr.c qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c qwen_asr_kernels_avx.c qwen_asr_audio.c qwen_asr_encoder.c qwen_asr_decoder.c qwen_asr_tokenizer.c qwen_asr_safetensors.c
+SRCS = qwen_asr.c qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c qwen_asr_kernels_avx.c qwen_asr_audio.c qwen_asr_encoder.c qwen_asr_decoder.c qwen_asr_tokenizer.c qwen_asr_safetensors.c qwen25_omni.c qwen25_omni_encoder.c qwen25_omni_decoder.c
 OBJS = $(SRCS:.c=.o)
 MAIN = main.c
 TARGET = qwen_asr
@@ -59,7 +59,7 @@ blas:
 $(TARGET): $(OBJS) main.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-%.o: %.c qwen_asr.h qwen_asr_kernels.h
+%.o: %.c qwen_asr.h qwen_asr_kernels.h qwen25_omni.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Debug build
@@ -103,4 +103,7 @@ qwen_asr_encoder.o: qwen_asr_encoder.c qwen_asr.h qwen_asr_kernels.h qwen_asr_sa
 qwen_asr_decoder.o: qwen_asr_decoder.c qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h
 qwen_asr_tokenizer.o: qwen_asr_tokenizer.c qwen_asr_tokenizer.h
 qwen_asr_safetensors.o: qwen_asr_safetensors.c qwen_asr_safetensors.h
-main.o: main.c qwen_asr.h qwen_asr_kernels.h
+qwen25_omni.o: qwen25_omni.c qwen25_omni.h qwen_asr_kernels.h qwen_asr_safetensors.h qwen_asr_audio.h qwen_asr_tokenizer.h
+qwen25_omni_encoder.o: qwen25_omni_encoder.c qwen25_omni.h qwen_asr_kernels.h qwen_asr_safetensors.h
+qwen25_omni_decoder.o: qwen25_omni_decoder.c qwen25_omni.h qwen_asr_kernels.h qwen_asr_safetensors.h
+main.o: main.c qwen_asr.h qwen25_omni.h qwen_asr_kernels.h

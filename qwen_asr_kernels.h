@@ -69,6 +69,21 @@ void qwen_conv2d(float *out, const float *in, const float *weight, const float *
                  int kh, int kw, int stride, int padding);
 
 /* ========================================================================
+ * 1D Convolution (for Qwen2.5-Omni encoder conv stem)
+ * ======================================================================== */
+
+/*
+ * 1D Convolution: out = conv1d(in, weight, bias)
+ * in: [C_in, L_in]
+ * weight: [C_out, C_in, k]
+ * bias: [C_out] (can be NULL)
+ * out: [C_out, L_out]
+ * L_out = (L_in + 2*padding - k) / stride + 1
+ */
+void qwen_conv1d(float *out, const float *in, const float *weight, const float *bias,
+                 int c_in, int c_out, int l_in, int k, int stride, int padding);
+
+/* ========================================================================
  * Normalization
  * ======================================================================== */
 

@@ -5,8 +5,10 @@
  */
 
 #include "qwen_asr.h"
+#include "qwen25_omni.h"
 #include "qwen_asr_audio.h"
 #include "qwen_asr_kernels.h"
+#include "qwen_asr_safetensors.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -200,7 +202,91 @@ int main(int argc, char **argv) {
     if (n_threads <= 0) n_threads = qwen_get_num_cpus();
     qwen_set_threads(n_threads);
 
-    /* Load model */
+    /* ---- Model family detection ----
+     * Qwen2.5-Omni has learned audio_bos_eos_token embeddings; Qwen3 does not.
+     * Also has Conv1D encoder (conv1) vs Qwen3 Conv2D (conv2d1). */
+    int is_q25 = 0;
+    {
+        multi_safetensors_t *probe = multi_safetensors_open(model_dir);
+        if (probe) {
+            is_q25 = (multi_safetensors_find(probe, "thinker.audio_tower.audio_bos_eos_token.weight", NULL) != NULL);
+            multi_safetensors_close(probe);
+        }
+    }
+
+    /* ---- Qwen2.5-Omni-7B path ---- */
+    if (is_q25) {
+        q25_ctx_t *q25 = q25_load(model_dir);
+        if (!q25) {
+            fprintf(stderr, "Failed to load Qwen2.5-Omni model from %s\n", model_dir);
+            return 1;
+        }
+
+        if (thinker_mode) q25->thinker_mode = 1;
+        if (thinker_max_tokens > 0) q25->thinker_max_tokens = thinker_max_tokens;
+        if (temperature >= 0.0f) q25->temperature = temperature;
+        if (repetition_penalty >= 0.0f) q25->repetition_penalty = repetition_penalty;
+        if (top_k >= 0) q25->top_k = top_k;
+        if (prompt_text && q25_set_prompt(q25, prompt_text) != 0) {
+            fprintf(stderr, "Failed to set --prompt text\n");
+            q25_free(q25);
+            return 1;
+        }
+
+        if (emit_tokens) q25_set_token_callback(q25, stream_token, NULL);
+        else q25_set_token_callback(q25, NULL, NULL);
+
+        char *text = NULL;
+        if (thinker_mode) {
+            float *samps = NULL; int ns = 0;
+            if (input_wav) samps = qwen_load_wav(input_wav, &ns);
+            else if (use_stdin) samps = qwen_read_pcm_stdin(&ns);
+            text = q25_thinker_generate(q25, samps, ns, thinker_text);
+            free(samps);
+        } else {
+            /* ASR mode */
+            float *samps = NULL; int ns = 0;
+            if (input_wav) samps = qwen_load_wav(input_wav, &ns);
+            else if (use_stdin) samps = qwen_read_pcm_stdin(&ns);
+            if (samps) {
+                text = q25_transcribe_audio(q25, samps, ns);
+                free(samps);
+            }
+        }
+
+        if (text) {
+            if (emit_tokens) printf("\n");
+            else printf("%s\n", text);
+            free(text);
+        } else {
+            fprintf(stderr, "Generation/transcription failed\n");
+            q25_free(q25);
+            return 1;
+        }
+
+        if (verbosity >= 1) {
+            double tokens_per_sec = 0.0;
+            if (q25->perf_total_ms > 0) {
+                tokens_per_sec = (1000.0 * (double)q25->perf_text_tokens) / q25->perf_total_ms;
+            }
+            fprintf(stderr,
+                    "Inference: %.0f ms, %d text tokens (%.2f tok/s, encoding: %.0fms, decoding: %.0fms)\n",
+                    q25->perf_total_ms, q25->perf_text_tokens, tokens_per_sec,
+                    q25->perf_encode_ms, q25->perf_decode_ms);
+            if (q25->perf_audio_ms > 0 && q25->perf_total_ms > 0) {
+                double audio_s = q25->perf_audio_ms / 1000.0;
+                double infer_s = q25->perf_total_ms / 1000.0;
+                double realtime_x = audio_s / infer_s;
+                fprintf(stderr, "Audio: %.1f s processed in %.1f s (%.2fx realtime)\n",
+                        audio_s, infer_s, realtime_x);
+            }
+        }
+
+        q25_free(q25);
+        return 0;
+    }
+
+    /* ---- Qwen3 path (ASR / Omni-30B) ---- */
     qwen_ctx_t *ctx = qwen_load(model_dir);
     if (!ctx) {
         fprintf(stderr, "Failed to load model from %s\n", model_dir);
