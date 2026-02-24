@@ -45,6 +45,8 @@ choose_model_interactive() {
     echo "Select model size to download:"
     echo "  1) small (Qwen3-ASR-0.6B)"
     echo "  2) large (Qwen3-ASR-1.7B)"
+    echo "  3) omni (Qwen2.5-Omni-7B)"
+    echo "  4) 30B (Qwen3-Omni-30B-A3B-Instruct)"
     echo ""
     while true; do
         read -r -p "Enter choice [1/2]: " ans
@@ -57,8 +59,16 @@ choose_model_interactive() {
                 MODEL_CHOICE="large"
                 return
                 ;;
+            3|omni|Omni|OMNI)
+                MODEL_CHOICE="omni"
+                return
+                ;;
+            4|30b|30B|30b|30B)
+                MODEL_CHOICE="30b"
+                return
+                ;;
             *)
-                echo "Please choose 1 (small) or 2 (large)."
+                echo "Please choose 1 (small), 2 (large), 3 (omni), or 4 (30B)."
                 ;;
         esac
     done
@@ -89,6 +99,48 @@ case "$MODEL_CHOICE" in
             "model.safetensors.index.json"
             "model-00001-of-00002.safetensors"
             "model-00002-of-00002.safetensors"
+            "vocab.json"
+            "merges.txt"
+        )
+        ;;
+    omni|Omni|OMNI)
+        MODEL_ID="Qwen/Qwen2.5-Omni-7B"
+        if [[ -z "$MODEL_DIR" ]]; then MODEL_DIR="qwen2.5-omni-7b"; fi
+        FILES=(
+            "config.json"
+            "generation_config.json"
+            "model.safetensors.index.json"
+            "model-00001-of-00005.safetensors"
+            "model-00002-of-00005.safetensors"
+            "model-00003-of-00005.safetensors"
+            "model-00004-of-00005.safetensors"
+            "model-00005-of-00005.safetensors"
+            "vocab.json"
+            "merges.txt"
+        )
+        ;;
+    30b)
+        MODEL_ID="Qwen/Qwen3-Omni-30B-A3B-Instruct"
+        if [[ -z "$MODEL_DIR" ]]; then MODEL_DIR="qwen3-omni-30b"; fi
+        FILES=(
+            "config.json"
+            "generation_config.json"
+            "model.safetensors.index.json"
+            "model-00001-of-00015.safetensors"
+            "model-00002-of-00015.safetensors"
+            "model-00003-of-00015.safetensors"
+            "model-00004-of-00015.safetensors"
+            "model-00005-of-00015.safetensors"
+            "model-00006-of-00015.safetensors"
+            "model-00007-of-00015.safetensors"
+            "model-00008-of-00015.safetensors"
+            "model-00009-of-00015.safetensors"
+            "model-00010-of-00015.safetensors"
+            "model-00011-of-00015.safetensors"
+            "model-00012-of-00015.safetensors"
+            "model-00013-of-00015.safetensors"
+            "model-00014-of-00015.safetensors"
+            "model-00015-of-00015.safetensors"
             "vocab.json"
             "merges.txt"
         )

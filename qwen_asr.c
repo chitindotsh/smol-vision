@@ -146,7 +146,26 @@ static int detect_config(qwen_ctx_t *ctx) {
     const safetensor_t *test = multi_safetensors_find(ms,
         "thinker.audio_tower.layers.18.self_attn.q_proj.weight", NULL);
 
-    if (test) {
+    const safetensor_t *test_omni = multi_safetensors_find(ms,
+        "thinker.audio_tower.layers.31.self_attn.q_proj.weight", NULL);
+
+    if (test_omni) {
+        /* 30B model */
+        cfg->enc_d_model = 1280;
+        cfg->enc_layers = 32;
+        cfg->enc_heads = 20;
+        cfg->enc_head_dim = 64;
+        cfg->enc_ffn_dim = 5120;
+        cfg->enc_output_dim = 2048;
+        cfg->dec_hidden = 2048;
+        cfg->dec_layers = 28;
+        cfg->dec_heads = 16;
+        cfg->dec_kv_heads = 8;
+        cfg->dec_head_dim = 128;
+        cfg->dec_intermediate = 6144;
+        if (qwen_verbose >= 1) fprintf(stderr, "Detected: Qwen3-OMNI-30B\n");
+
+    } else if (test) {
         /* 1.7B model */
         cfg->enc_d_model = 1024;
         cfg->enc_layers = 24;

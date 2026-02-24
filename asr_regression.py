@@ -207,6 +207,8 @@ def transcribe_segmented(
         cmd += ["--past-text", "no"]
     cmd += list(extra_args)
 
+    print(cmd)
+
     rc, out, err = run_once(cmd, timeout_s, show_output=show_output)
     if rc != 0:
         mode = "with past-text conditioning" if past_text_conditioning else "without past-text conditioning"
