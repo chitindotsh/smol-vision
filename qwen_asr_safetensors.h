@@ -9,8 +9,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SAFETENSORS_MAX_TENSORS 1024
-#define SAFETENSORS_MAX_SHARDS 8
+#define SAFETENSORS_MAX_TENSORS 8192
+#define SAFETENSORS_MAX_SHARDS 16
 
 typedef enum {
     DTYPE_F32 = 0,

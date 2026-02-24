@@ -150,7 +150,7 @@ static int detect_config(qwen_ctx_t *ctx) {
         "thinker.audio_tower.layers.31.self_attn.q_proj.weight", NULL);
 
     if (test_omni) {
-        /* 30B model */
+        /* 30B model — MoE decoder with 128 experts, top-8 routing */
         cfg->enc_d_model = 1280;
         cfg->enc_layers = 32;
         cfg->enc_heads = 20;
@@ -158,12 +158,17 @@ static int detect_config(qwen_ctx_t *ctx) {
         cfg->enc_ffn_dim = 5120;
         cfg->enc_output_dim = 2048;
         cfg->dec_hidden = 2048;
-        cfg->dec_layers = 28;
-        cfg->dec_heads = 16;
-        cfg->dec_kv_heads = 8;
+        cfg->dec_layers = 48;
+        cfg->dec_heads = 32;
+        cfg->dec_kv_heads = 4;
         cfg->dec_head_dim = 128;
-        cfg->dec_intermediate = 6144;
-        if (qwen_verbose >= 1) fprintf(stderr, "Detected: Qwen3-OMNI-30B\n");
+        cfg->dec_intermediate = 768;   /* moe_intermediate_size */
+        cfg->is_moe = 1;
+        cfg->num_experts = 128;
+        cfg->num_experts_per_tok = 8;
+        cfg->moe_intermediate = 768;
+        cfg->norm_topk_prob = 1;
+        if (qwen_verbose >= 1) fprintf(stderr, "Detected: Qwen3-OMNI-30B (MoE)\n");
 
     } else if (test) {
         /* 1.7B model */
@@ -302,6 +307,7 @@ void qwen_free(qwen_ctx_t *ctx) {
         FREE0(l->q_norm_weight); FREE0(l->k_norm_weight);
         FREE0(l->input_norm); FREE0(l->post_attn_norm);
         FREE0(l->gate_up_fused_bf16);
+        FREE0(l->moe_gate_weight);
     }
     FREE0(ctx->decoder.norm);
 
@@ -323,6 +329,13 @@ void qwen_free(qwen_ctx_t *ctx) {
     free(ctx->pref_q); free(ctx->pref_k); free(ctx->pref_v);
     free(ctx->pref_attn_out); free(ctx->pref_proj_out); free(ctx->pref_ffn_out);
     free(ctx->pref_gate); free(ctx->pref_gate_up);
+
+    /* MoE scratch buffers */
+    free(ctx->moe_router_logits);
+    free(ctx->moe_gate_buf);
+    free(ctx->moe_up_buf);
+    free(ctx->moe_expert_out);
+    free(ctx->moe_accum);
 
     /* Decoder RoPE caches */
     free(ctx->rope_cache_cos); free(ctx->rope_cache_sin);
@@ -351,7 +364,7 @@ void qwen_free(qwen_ctx_t *ctx) {
  *   PREFIX_HEAD: [<|im_start|>, "system", "\n"]
  *   [optional system prompt text tokens]
  *   PREFIX_TAIL: [<|im_end|>, "\n", <|im_start|>, "user", "\n", <|audio_start|>]
- *   AUDIO: [151676] × N_audio_tokens
+ *   AUDIO: [audio_pad_token] × N_audio_tokens  (151676 for ASR, 151675 for Omni)
  *   SUFFIX_BASE: [<|audio_end|>, <|im_end|>, "\n", <|im_start|>, "assistant", "\n"]
  *   [optional language tokens: "language X" + <asr_text>]
  */

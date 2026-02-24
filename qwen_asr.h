@@ -23,8 +23,8 @@
 #define QWEN_VOCAB_SIZE       151936
 
 /* Maximum layer counts (for static array sizing) */
-#define QWEN_MAX_ENC_LAYERS   24
-#define QWEN_MAX_DEC_LAYERS   28
+#define QWEN_MAX_ENC_LAYERS   32
+#define QWEN_MAX_DEC_LAYERS   48
 
 /* Special token IDs */
 #define QWEN_TOKEN_IM_START     151644
@@ -66,6 +66,13 @@ typedef struct {
     int vocab_size;            /* 151936 */
     float dec_rms_norm_eps;    /* 1e-6 */
     float dec_rope_theta;      /* 1e6 */
+
+    /* MoE (Mixture of Experts) — 0 for dense ASR models */
+    int is_moe;                /* 1 if MoE decoder */
+    int num_experts;           /* 128 for 30B */
+    int num_experts_per_tok;   /* 8 for 30B */
+    int moe_intermediate;      /* 768 for 30B */
+    int norm_topk_prob;        /* 1 for 30B */
 } qwen_config_t;
 
 /* ========================================================================
@@ -150,6 +157,9 @@ typedef struct {
 
     /* Fused gate+up weight for single-token matvec [2*intermediate, hidden] */
     uint16_t *gate_up_fused_bf16;
+
+    /* MoE router gate (NULL for dense layers) */
+    float *moe_gate_weight;    /* [num_experts, hidden] router gate (f32) */
 } qwen_dec_layer_t;
 
 typedef struct {
@@ -201,6 +211,13 @@ typedef struct {
     float *pref_attn_out, *pref_proj_out, *pref_ffn_out;
     float *pref_gate, *pref_gate_up;
     int pref_seq_cap;
+
+    /* MoE scratch buffers (allocated when is_moe) */
+    float *moe_router_logits;  /* [num_experts] */
+    float *moe_gate_buf;       /* [moe_intermediate] */
+    float *moe_up_buf;         /* [moe_intermediate] */
+    float *moe_expert_out;     /* [hidden] */
+    float *moe_accum;          /* [hidden] */
 
     /* Cached RoPE tables for decoder positions */
     float *rope_cache_cos, *rope_cache_sin;   /* [pos, head_dim] */

@@ -6,7 +6,10 @@
  *   -> Causal GQA attention -> Output proj -> residual
  *   RMSNorm -> SwiGLU MLP (gate/up/down, no bias) -> residual
  *
- * Features: Q/K per-head RMSNorm, NeoX split-half RoPE, GQA 2:1,
+ * MoE variant (30B): replaces dense SwiGLU MLP with router + 128 experts.
+ * Expert weights loaded on demand from mmap'd safetensors.
+ *
+ * Features: Q/K per-head RMSNorm, NeoX split-half RoPE, GQA,
  * tied embeddings (tok_embeddings == lm_head).
  */
 
@@ -77,35 +80,54 @@ int qwen_decoder_load(qwen_decoder_t *dec, multi_safetensors_t *ms,
         snprintf(name, sizeof(name), "thinker.model.layers.%d.post_attention_layernorm.weight", i);
         l->post_attn_norm = load_f32(ms, name);
 
-        /* SwiGLU MLP weights (bf16, no bias) */
-        snprintf(name, sizeof(name), "thinker.model.layers.%d.mlp.gate_proj.weight", i);
-        l->gate_weight_bf16 = load_bf16_direct(ms, name);
-        snprintf(name, sizeof(name), "thinker.model.layers.%d.mlp.up_proj.weight", i);
-        l->up_weight_bf16 = load_bf16_direct(ms, name);
-        snprintf(name, sizeof(name), "thinker.model.layers.%d.mlp.down_proj.weight", i);
-        l->down_weight_bf16 = load_bf16_direct(ms, name);
-
         if (!l->wq_weight_bf16 || !l->wk_weight_bf16 ||
-            !l->wv_weight_bf16 || !l->wo_weight_bf16 ||
-            !l->gate_weight_bf16 || !l->up_weight_bf16 || !l->down_weight_bf16) {
-            fprintf(stderr, "decoder: failed to load layer %d\n", i);
+            !l->wv_weight_bf16 || !l->wo_weight_bf16) {
+            fprintf(stderr, "decoder: failed to load attn weights for layer %d\n", i);
             return -1;
         }
 
-        /* Fuse gate+up weights: interleave rows [gate_row0, up_row0, gate_row1, up_row1, ...] */
-        {
-            int inter = cfg->dec_intermediate;
-            int hidden = cfg->dec_hidden;
-            size_t row_bytes = (size_t)hidden * sizeof(uint16_t);
-            l->gate_up_fused_bf16 = (uint16_t *)malloc(2 * (size_t)inter * row_bytes);
-            for (int r = 0; r < inter; r++) {
-                memcpy(l->gate_up_fused_bf16 + (size_t)(2 * r) * hidden,
-                       l->gate_weight_bf16 + (size_t)r * hidden, row_bytes);
-                memcpy(l->gate_up_fused_bf16 + (size_t)(2 * r + 1) * hidden,
-                       l->up_weight_bf16 + (size_t)r * hidden, row_bytes);
+        if (cfg->is_moe) {
+            /* MoE layer: load router gate weight as f32, skip dense MLP */
+            snprintf(name, sizeof(name), "thinker.model.layers.%d.mlp.gate.weight", i);
+            l->moe_gate_weight = load_f32(ms, name);
+            if (!l->moe_gate_weight) {
+                fprintf(stderr, "decoder: failed to load MoE gate for layer %d\n", i);
+                return -1;
             }
-        }
+            /* Expert weights are loaded on demand during forward pass */
+            l->gate_weight_bf16 = NULL;
+            l->up_weight_bf16 = NULL;
+            l->down_weight_bf16 = NULL;
+            l->gate_up_fused_bf16 = NULL;
+        } else {
+            /* Dense MLP: load gate/up/down and fuse */
+            snprintf(name, sizeof(name), "thinker.model.layers.%d.mlp.gate_proj.weight", i);
+            l->gate_weight_bf16 = load_bf16_direct(ms, name);
+            snprintf(name, sizeof(name), "thinker.model.layers.%d.mlp.up_proj.weight", i);
+            l->up_weight_bf16 = load_bf16_direct(ms, name);
+            snprintf(name, sizeof(name), "thinker.model.layers.%d.mlp.down_proj.weight", i);
+            l->down_weight_bf16 = load_bf16_direct(ms, name);
 
+            if (!l->gate_weight_bf16 || !l->up_weight_bf16 || !l->down_weight_bf16) {
+                fprintf(stderr, "decoder: failed to load MLP weights for layer %d\n", i);
+                return -1;
+            }
+
+            /* Fuse gate+up weights: interleave rows [gate_row0, up_row0, gate_row1, up_row1, ...] */
+            {
+                int inter = cfg->dec_intermediate;
+                int hidden = cfg->dec_hidden;
+                size_t row_bytes = (size_t)hidden * sizeof(uint16_t);
+                l->gate_up_fused_bf16 = (uint16_t *)malloc(2 * (size_t)inter * row_bytes);
+                for (int r = 0; r < inter; r++) {
+                    memcpy(l->gate_up_fused_bf16 + (size_t)(2 * r) * hidden,
+                           l->gate_weight_bf16 + (size_t)r * hidden, row_bytes);
+                    memcpy(l->gate_up_fused_bf16 + (size_t)(2 * r + 1) * hidden,
+                           l->up_weight_bf16 + (size_t)r * hidden, row_bytes);
+                }
+            }
+            l->moe_gate_weight = NULL;
+        }
     }
 
     /* Final RMSNorm */
@@ -256,6 +278,148 @@ static int ensure_rope_cache(qwen_ctx_t *ctx, int required_pos, int head_dim, fl
 }
 
 /* ========================================================================
+ * MoE Forward (Single Token)
+ * ======================================================================== */
+
+static void ensure_moe_buffers(qwen_ctx_t *ctx) {
+    if (ctx->moe_router_logits) return;
+    const qwen_config_t *cfg = &ctx->config;
+    int moe_inter = cfg->moe_intermediate;
+    int dim = cfg->dec_hidden;
+    ctx->moe_router_logits = (float *)malloc(cfg->num_experts * sizeof(float));
+    ctx->moe_gate_buf     = (float *)malloc(moe_inter * sizeof(float));
+    ctx->moe_up_buf       = (float *)malloc(moe_inter * sizeof(float));
+    ctx->moe_expert_out   = (float *)malloc(dim * sizeof(float));
+    ctx->moe_accum        = (float *)malloc(dim * sizeof(float));
+}
+
+/* Single-token MoE forward: routes x_norm to top-k experts and accumulates.
+ * x_norm: [hidden] (post-attn RMSNorm output, read-only)
+ * residual x: [hidden] (updated in-place: x += weighted sum of expert outputs)
+ * Expert weights are loaded on demand from mmap'd safetensors. */
+static void moe_forward_single(qwen_ctx_t *ctx, float *x, const float *x_norm,
+                                const qwen_dec_layer_t *l, int layer_idx) {
+    const qwen_config_t *cfg = &ctx->config;
+    int hidden = cfg->dec_hidden;
+    int num_experts = cfg->num_experts;
+    int top_k = cfg->num_experts_per_tok;
+    int moe_inter = cfg->moe_intermediate;
+    multi_safetensors_t *ms = (multi_safetensors_t *)ctx->safetensors;
+
+    ensure_moe_buffers(ctx);
+    float *router_logits = ctx->moe_router_logits;
+    float *gate_buf = ctx->moe_gate_buf;
+    float *up_buf = ctx->moe_up_buf;
+    float *expert_out = ctx->moe_expert_out;
+    float *accum = ctx->moe_accum;
+
+    /* 1. Compute router logits: gate_weight @ x_norm -> [num_experts]
+     *    gate_weight is [num_experts, hidden] stored row-major as f32. */
+    for (int e = 0; e < num_experts; e++) {
+        const float *row = l->moe_gate_weight + (size_t)e * hidden;
+        float dot = 0.0f;
+        for (int d = 0; d < hidden; d++) dot += row[d] * x_norm[d];
+        router_logits[e] = dot;
+    }
+
+    /* 2. Find top-k expert indices (simple selection) */
+    int topk_idx[8]; /* num_experts_per_tok is 8 */
+    float topk_logits[8];
+    for (int k = 0; k < top_k; k++) {
+        int best = -1;
+        float best_val = -1e30f;
+        for (int e = 0; e < num_experts; e++) {
+            /* Skip already-selected experts */
+            int skip = 0;
+            for (int j = 0; j < k; j++) {
+                if (topk_idx[j] == e) { skip = 1; break; }
+            }
+            if (skip) continue;
+            if (router_logits[e] > best_val) {
+                best_val = router_logits[e];
+                best = e;
+            }
+        }
+        topk_idx[k] = best;
+        topk_logits[k] = best_val;
+    }
+
+    /* 3. Softmax over top-k logits to get routing weights */
+    float max_logit = topk_logits[0];
+    for (int k = 1; k < top_k; k++)
+        if (topk_logits[k] > max_logit) max_logit = topk_logits[k];
+
+    float sum_exp = 0.0f;
+    float topk_weights[8];
+    for (int k = 0; k < top_k; k++) {
+        topk_weights[k] = expf(topk_logits[k] - max_logit);
+        sum_exp += topk_weights[k];
+    }
+    for (int k = 0; k < top_k; k++)
+        topk_weights[k] /= sum_exp;
+
+    /* norm_topk_prob: normalize so weights sum to 1 (already guaranteed by
+     * softmax, but matches HF implementation). No-op here. */
+
+    /* 4. Zero accumulator */
+    memset(accum, 0, (size_t)hidden * sizeof(float));
+
+    /* 5. For each selected expert: load weights on demand, compute SwiGLU, accumulate */
+    char wname[512];
+    for (int k = 0; k < top_k; k++) {
+        int eidx = topk_idx[k];
+        float w = topk_weights[k];
+
+        /* Load expert gate/up/down weights from mmap (bf16 direct) */
+        safetensors_file_t *sf_gate = NULL, *sf_up = NULL, *sf_down = NULL;
+
+        snprintf(wname, sizeof(wname),
+                 "thinker.model.layers.%d.mlp.experts.%d.gate_proj.weight",
+                 layer_idx, eidx);
+        const safetensor_t *t_gate = multi_safetensors_find(ms, wname, &sf_gate);
+
+        snprintf(wname, sizeof(wname),
+                 "thinker.model.layers.%d.mlp.experts.%d.up_proj.weight",
+                 layer_idx, eidx);
+        const safetensor_t *t_up = multi_safetensors_find(ms, wname, &sf_up);
+
+        snprintf(wname, sizeof(wname),
+                 "thinker.model.layers.%d.mlp.experts.%d.down_proj.weight",
+                 layer_idx, eidx);
+        const safetensor_t *t_down = multi_safetensors_find(ms, wname, &sf_down);
+
+        if (!t_gate || !t_up || !t_down) {
+            fprintf(stderr, "moe: expert %d weights not found in layer %d\n",
+                    eidx, layer_idx);
+            continue;
+        }
+
+        uint16_t *gate_w = safetensors_get_bf16_direct(sf_gate, t_gate);
+        uint16_t *up_w = safetensors_get_bf16_direct(sf_up, t_up);
+        uint16_t *down_w = safetensors_get_bf16_direct(sf_down, t_down);
+
+        /* SwiGLU: out = down(silu(gate(x_norm)) * up(x_norm)) */
+        /* gate(x_norm) -> gate_buf [moe_inter] */
+        qwen_linear_nobias_bf16(gate_buf, x_norm, gate_w, 1, hidden, moe_inter);
+        /* up(x_norm) -> up_buf [moe_inter] */
+        qwen_linear_nobias_bf16(up_buf, x_norm, up_w, 1, hidden, moe_inter);
+        /* silu(gate_buf) in-place */
+        qwen_silu(gate_buf, moe_inter);
+        /* gate_buf *= up_buf */
+        qwen_mul_inplace(gate_buf, up_buf, moe_inter);
+        /* down(gate_buf) -> expert_out [hidden] */
+        qwen_linear_nobias_bf16(expert_out, gate_buf, down_w, 1, moe_inter, hidden);
+
+        /* Weighted accumulate: accum += w * expert_out */
+        for (int d = 0; d < hidden; d++)
+            accum[d] += w * expert_out[d];
+    }
+
+    /* 6. Add MoE output to residual */
+    qwen_add_inplace(x, accum, hidden);
+}
+
+/* ========================================================================
  * Decoder Prefill (Multiple Tokens)
  * ======================================================================== */
 
@@ -344,14 +508,23 @@ void qwen_decoder_prefill(qwen_ctx_t *ctx, const float *input_embeds, int seq_le
         /* Post-attention RMSNorm */
         qwen_rms_norm(x_norm, x, l->post_attn_norm, seq_len, dim, eps);
 
-        /* SwiGLU MLP */
-        qwen_linear_nobias_bf16(gate_up, x_norm, l->gate_up_fused_bf16,
-                                 seq_len, dim, 2 * intermediate);
-        qwen_swiglu_multiply(gate, gate_up, seq_len, intermediate);
-        qwen_linear_nobias_bf16(ffn_out, gate, l->down_weight_bf16,
-                                 seq_len, intermediate, dim);
-
-        qwen_add_inplace(x, ffn_out, seq_len * dim);
+        if (cfg->is_moe) {
+            /* MoE: process each token position independently (each routes
+             * to different experts). Adequate for ASR prompt lengths. */
+            for (int s = 0; s < seq_len; s++) {
+                float *xs = x + (size_t)s * dim;
+                const float *xn = x_norm + (size_t)s * dim;
+                moe_forward_single(ctx, xs, xn, l, layer);
+            }
+        } else {
+            /* Dense SwiGLU MLP */
+            qwen_linear_nobias_bf16(gate_up, x_norm, l->gate_up_fused_bf16,
+                                     seq_len, dim, 2 * intermediate);
+            qwen_swiglu_multiply(gate, gate_up, seq_len, intermediate);
+            qwen_linear_nobias_bf16(ffn_out, gate, l->down_weight_bf16,
+                                     seq_len, intermediate, dim);
+            qwen_add_inplace(x, ffn_out, seq_len * dim);
+        }
 
     }
 
@@ -459,13 +632,18 @@ int qwen_decoder_forward(qwen_ctx_t *ctx, const float *input_embed) {
 
         qwen_rms_norm(x_norm, x, l->post_attn_norm, 1, dim, eps);
 
-        /* Fused gate+up matvec: one pass over x_norm, output interleaved [g0,u0,g1,u1,...] */
-        qwen_linear_nobias_bf16(gate_buf, x_norm, l->gate_up_fused_bf16,
-                                 1, dim, 2 * intermediate);
-        /* In-place for seq=1: gate_buf[0:inter] receives SwiGLU output. */
-        qwen_swiglu_multiply(gate_buf, gate_buf, 1, intermediate);
-        qwen_linear_nobias_bf16(ffn_out, gate_buf, l->down_weight_bf16, 1, intermediate, dim);
-        qwen_add_inplace(x, ffn_out, dim);
+        if (cfg->is_moe) {
+            /* MoE: route to top-k experts */
+            moe_forward_single(ctx, x, x_norm, l, layer);
+        } else {
+            /* Fused gate+up matvec: one pass over x_norm, output interleaved [g0,u0,g1,u1,...] */
+            qwen_linear_nobias_bf16(gate_buf, x_norm, l->gate_up_fused_bf16,
+                                     1, dim, 2 * intermediate);
+            /* In-place for seq=1: gate_buf[0:inter] receives SwiGLU output. */
+            qwen_swiglu_multiply(gate_buf, gate_buf, 1, intermediate);
+            qwen_linear_nobias_bf16(ffn_out, gate_buf, l->down_weight_bf16, 1, intermediate, dim);
+            qwen_add_inplace(x, ffn_out, dim);
+        }
     }
 
     ctx->kv_cache_len = pos + 1;
