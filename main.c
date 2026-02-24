@@ -65,6 +65,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  --prompt <text>            System prompt for biasing (example: \"Preserve spelling: CPU, CUDA, PostgreSQL, Redis\")\n");
     fprintf(stderr, "  --language <lang>          Force output language via token conditioning\n");
     fprintf(stderr, "                             (usually auto-detected if omitted)\n");
+    fprintf(stderr, "  --thinker              Thinker mode: free-form text generation (not ASR)\n");
+    fprintf(stderr, "  --text <str>           Text input for thinker mode (instead of/with audio)\n");
+    fprintf(stderr, "  --max-tokens <n>       Max generation tokens for thinker mode (default: 2048)\n");
     fprintf(stderr, "  --moe-preload  Pre-fault all MoE expert pages into RAM (high memory)\n");
     fprintf(stderr, "  --monitor     Show inline Unicode symbols on stderr (streaming diagnostics)\n");
     fprintf(stderr, "  --debug       Debug output (per-layer details)\n");
@@ -90,6 +93,9 @@ int main(int argc, char **argv) {
     int skip_silence = 0;
     int moe_preload = 0;
     int emit_tokens = 1;
+    int thinker_mode = 0;
+    const char *thinker_text = NULL;
+    int thinker_max_tokens = -1;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -127,6 +133,12 @@ int main(int argc, char **argv) {
             use_stdin = 1;
         } else if (strcmp(argv[i], "--moe-preload") == 0) {
             moe_preload = 1;
+        } else if (strcmp(argv[i], "--thinker") == 0) {
+            thinker_mode = 1;
+        } else if (strcmp(argv[i], "--text") == 0 && i + 1 < argc) {
+            thinker_text = argv[++i];
+        } else if (strcmp(argv[i], "--max-tokens") == 0 && i + 1 < argc) {
+            thinker_max_tokens = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--monitor") == 0) {
             qwen_monitor = 1;
         } else if (strcmp(argv[i], "--debug") == 0) {
@@ -143,8 +155,16 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (!model_dir || (!input_wav && !use_stdin)) {
+    if (!model_dir || (!thinker_mode && !input_wav && !use_stdin)) {
         usage(argv[0]);
+        return 1;
+    }
+    if (thinker_mode && !input_wav && !use_stdin && !thinker_text) {
+        fprintf(stderr, "Error: --thinker requires -i, --stdin, or --text\n");
+        return 1;
+    }
+    if (thinker_max_tokens != -1 && thinker_max_tokens <= 0) {
+        fprintf(stderr, "Error: --max-tokens must be > 0\n");
         return 1;
     }
     if (enc_window_sec >= 0 && (enc_window_sec < 1.0f || enc_window_sec > 8.0f)) {
@@ -194,6 +214,8 @@ int main(int argc, char **argv) {
          * Keep segmented mode default unchanged (off). */
         ctx->past_text_conditioning = 1;
     if (skip_silence) ctx->skip_silence = 1;
+    if (thinker_mode) ctx->thinker_mode = 1;
+    if (thinker_max_tokens > 0) ctx->thinker_max_tokens = thinker_max_tokens;
     if (prompt_text && qwen_set_prompt(ctx, prompt_text) != 0) {
         fprintf(stderr, "Failed to set --prompt text\n");
         qwen_free(ctx);
@@ -214,7 +236,13 @@ int main(int argc, char **argv) {
 
     /* Transcribe */
     char *text = NULL;
-    if (stream_mode && use_stdin) {
+    if (thinker_mode) {
+        float *samps = NULL; int ns = 0;
+        if (input_wav) samps = qwen_load_wav(input_wav, &ns);
+        else if (use_stdin) samps = qwen_read_pcm_stdin(&ns);
+        text = qwen_thinker_generate(ctx, samps, ns, thinker_text);
+        free(samps);
+    } else if (stream_mode && use_stdin) {
         /* Live incremental streaming from stdin */
         qwen_live_audio_t *live = qwen_live_audio_start_stdin();
         if (live) {

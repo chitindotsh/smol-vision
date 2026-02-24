@@ -249,6 +249,8 @@ typedef struct {
                                     * In segmented mode, this also enables boundary cleanup/post-processing. */
     int skip_silence;              /* 1=drop long silent spans before transcription */
     int moe_preload;               /* 1=madvise all expert pages into RAM */
+    int thinker_mode;              /* 1=thinker/chat mode (no asr_text gating) */
+    int thinker_max_tokens;        /* max generation tokens in thinker mode (default 2048) */
 
     /* Optional prompt/language controls */
     char *prompt;                  /* system prompt text (UTF-8) */
@@ -330,6 +332,14 @@ char *qwen_transcribe_stream(qwen_ctx_t *ctx, const float *samples, int n_sample
  * The streaming loop waits for new data instead of terminating at EOF.
  * Tokens are emitted via the token callback as they become "fixed". */
 char *qwen_transcribe_stream_live(qwen_ctx_t *ctx, qwen_live_audio_t *live);
+
+/* Thinker mode: free-form text generation.
+ * Audio path: samples != NULL → encode audio, generate response.
+ * Text path: user_text != NULL → embed text as user message.
+ * System prompt via qwen_set_prompt(). Returns malloc'd string. */
+char *qwen_thinker_generate(qwen_ctx_t *ctx,
+                            const float *samples, int n_samples,
+                            const char *user_text);
 
 /* ========================================================================
  * Internal Functions

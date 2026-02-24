@@ -265,6 +265,8 @@ qwen_ctx_t *qwen_load(const char *model_dir) {
     ctx->stream_max_new_tokens = 32;
     ctx->past_text_conditioning = 0;
     ctx->skip_silence = 0;
+    ctx->thinker_mode = 0;
+    ctx->thinker_max_tokens = 2048;
 
     if (qwen_verbose >= 1) fprintf(stderr, "Model loaded.\n");
     return ctx;
@@ -392,6 +394,16 @@ static const int PROMPT_SUFFIX_BASE[] = {
 #define PREFIX_HEAD_LEN 3
 #define PREFIX_TAIL_LEN 6
 #define SUFFIX_BASE_LEN 6
+
+/* Thinker mode: text-only user turn (no audio markers) */
+static const int THINKER_USER_HEAD[] = {
+    151645, 198, 151644, 872, 198   /* <|im_end|>\n<|im_start|>user\n */
+};
+static const int THINKER_USER_TAIL[] = {
+    151645, 198, 151644, 77091, 198 /* <|im_end|>\n<|im_start|>assistant\n */
+};
+#define THINKER_USER_HEAD_LEN 5
+#define THINKER_USER_TAIL_LEN 5
 
 /* Convert a single token embedding from bf16 to f32 */
 static void tok_embed_bf16_to_f32(float *dst, const uint16_t *tok_emb_bf16,
@@ -2221,5 +2233,263 @@ char *qwen_transcribe_stdin(qwen_ctx_t *ctx) {
     if (!samples) return NULL;
     char *text = qwen_transcribe_audio(ctx, samples, n_samples);
     free(samples);
+    return text;
+}
+
+/* ========================================================================
+ * Thinker Mode — Free-Form Text Generation
+ * ======================================================================== */
+
+char *qwen_thinker_generate(qwen_ctx_t *ctx,
+                            const float *samples, int n_samples,
+                            const char *user_text) {
+    if (!ctx) return NULL;
+    if (!samples && !user_text) {
+        fprintf(stderr, "qwen_thinker: need audio samples or user text\n");
+        return NULL;
+    }
+
+    const qwen_config_t *cfg = &ctx->config;
+    int dim = cfg->dec_hidden;
+    int max_tokens = ctx->thinker_max_tokens > 0 ? ctx->thinker_max_tokens : 2048;
+
+    ctx->perf_total_ms = 0;
+    ctx->perf_text_tokens = 0;
+    ctx->perf_audio_ms = samples ? 1000.0 * (double)n_samples / (double)QWEN_SAMPLE_RATE : 0;
+    ctx->perf_encode_ms = 0;
+    ctx->perf_decode_ms = 0;
+
+    double total_t0 = get_time_ms();
+
+    /* Load tokenizer */
+    char vocab_path[1024];
+    snprintf(vocab_path, sizeof(vocab_path), "%s/vocab.json", ctx->model_dir);
+    qwen_tokenizer_t *tokenizer = qwen_tokenizer_load(vocab_path);
+    if (!tokenizer) return NULL;
+
+    if (prepare_prompt_tokens(ctx, tokenizer) != 0) {
+        qwen_tokenizer_free(tokenizer);
+        return NULL;
+    }
+
+    /* ---- Encode audio (if provided) ---- */
+    float *enc_output = NULL;
+    int enc_seq_len = 0;
+    double encode_ms = 0;
+
+    if (samples && n_samples > 0) {
+        double t0 = get_time_ms();
+        int mel_frames = 0;
+        float *mel = qwen_mel_spectrogram(samples, n_samples, &mel_frames);
+        if (!mel) { qwen_tokenizer_free(tokenizer); return NULL; }
+
+        enc_output = qwen_encoder_forward(ctx, mel, mel_frames, &enc_seq_len);
+        free(mel);
+        if (!enc_output) { qwen_tokenizer_free(tokenizer); return NULL; }
+        encode_ms = get_time_ms() - t0;
+
+        if (qwen_verbose >= 2)
+            fprintf(stderr, "  Thinker encoder: %d tokens (%.0f ms)\n", enc_seq_len, encode_ms);
+    }
+
+    /* ---- Encode user text (if provided, for text-only path) ---- */
+    int *user_tokens = NULL;
+    int n_user_tokens = 0;
+    if (user_text && user_text[0] != '\0') {
+        user_tokens = qwen_tokenizer_encode(tokenizer, user_text, &n_user_tokens);
+        if (!user_tokens) {
+            fprintf(stderr, "qwen_thinker: failed to encode user text\n");
+            free(enc_output);
+            qwen_tokenizer_free(tokenizer);
+            return NULL;
+        }
+    }
+
+    /* ---- Build input embeddings ----
+     *
+     * Audio path:
+     *   PREFIX_HEAD + [system prompt] + PREFIX_TAIL + [encoder embeddings] + SUFFIX_BASE
+     *   (no force_prompt_tokens — thinker mode does not gate behind <asr_text>)
+     *
+     * Text-only path:
+     *   PREFIX_HEAD + [system prompt] + THINKER_USER_HEAD + [user text tokens] + THINKER_USER_TAIL
+     *
+     * Combined path (audio + text):
+     *   PREFIX_HEAD + [system prompt] + PREFIX_TAIL + [encoder embeddings] +
+     *   SUFFIX_BASE + [user text as continuation in assistant turn]
+     *   (simplified: audio path with user_text appended is unusual; treat text
+     *    as the system prompt content addition instead — but for now, if both
+     *    are provided, use the audio path layout)
+     */
+
+    int total_seq;
+    float *input_embeds = NULL;
+
+    if (enc_output) {
+        /* Audio path (possibly with text as extra context via system prompt) */
+        int prefix_len = PREFIX_HEAD_LEN + ctx->n_prompt_tokens + PREFIX_TAIL_LEN;
+        total_seq = prefix_len + enc_seq_len + SUFFIX_BASE_LEN;
+
+        input_embeds = (float *)malloc((size_t)total_seq * dim * sizeof(float));
+        if (!input_embeds) {
+            free(enc_output); free(user_tokens);
+            qwen_tokenizer_free(tokenizer);
+            return NULL;
+        }
+
+        int off = 0;
+        /* PREFIX_HEAD: <|im_start|>system\n */
+        for (int i = 0; i < PREFIX_HEAD_LEN; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  PROMPT_PREFIX_HEAD[i], dim);
+            off++;
+        }
+        /* System prompt text */
+        for (int i = 0; i < ctx->n_prompt_tokens; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  ctx->prompt_tokens[i], dim);
+            off++;
+        }
+        /* PREFIX_TAIL: <|im_end|>\n<|im_start|>user\n<|audio_start|> */
+        for (int i = 0; i < PREFIX_TAIL_LEN; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  PROMPT_PREFIX_TAIL[i], dim);
+            off++;
+        }
+        /* Audio encoder embeddings */
+        for (int i = 0; i < enc_seq_len; i++) {
+            memcpy(input_embeds + (prefix_len + i) * dim,
+                   enc_output + i * dim,
+                   dim * sizeof(float));
+        }
+        free(enc_output);
+        /* SUFFIX_BASE: <|audio_end|><|im_end|>\n<|im_start|>assistant\n */
+        int suffix_off = prefix_len + enc_seq_len;
+        for (int i = 0; i < SUFFIX_BASE_LEN; i++) {
+            tok_embed_bf16_to_f32(input_embeds + (suffix_off + i) * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  PROMPT_SUFFIX_BASE[i], dim);
+        }
+    } else {
+        /* Text-only path */
+        total_seq = PREFIX_HEAD_LEN + ctx->n_prompt_tokens
+                  + THINKER_USER_HEAD_LEN + n_user_tokens + THINKER_USER_TAIL_LEN;
+
+        input_embeds = (float *)malloc((size_t)total_seq * dim * sizeof(float));
+        if (!input_embeds) {
+            free(user_tokens);
+            qwen_tokenizer_free(tokenizer);
+            return NULL;
+        }
+
+        int off = 0;
+        /* PREFIX_HEAD: <|im_start|>system\n */
+        for (int i = 0; i < PREFIX_HEAD_LEN; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  PROMPT_PREFIX_HEAD[i], dim);
+            off++;
+        }
+        /* System prompt text */
+        for (int i = 0; i < ctx->n_prompt_tokens; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  ctx->prompt_tokens[i], dim);
+            off++;
+        }
+        /* THINKER_USER_HEAD: <|im_end|>\n<|im_start|>user\n */
+        for (int i = 0; i < THINKER_USER_HEAD_LEN; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  THINKER_USER_HEAD[i], dim);
+            off++;
+        }
+        /* User text tokens */
+        for (int i = 0; i < n_user_tokens; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  user_tokens[i], dim);
+            off++;
+        }
+        /* THINKER_USER_TAIL: <|im_end|>\n<|im_start|>assistant\n */
+        for (int i = 0; i < THINKER_USER_TAIL_LEN; i++) {
+            tok_embed_bf16_to_f32(input_embeds + off * dim,
+                                  ctx->decoder.tok_embeddings_bf16,
+                                  THINKER_USER_TAIL[i], dim);
+            off++;
+        }
+    }
+    free(user_tokens);
+
+    /* ---- Decoder prefill ---- */
+    double t0 = get_time_ms();
+    ctx->kv_cache_len = 0;
+    int prefill_len = total_seq - 1;
+    qwen_decoder_prefill(ctx, input_embeds, prefill_len);
+
+    /* First token from last prefill position */
+    float *last_embed = input_embeds + (size_t)prefill_len * dim;
+    int token = qwen_decoder_forward(ctx, last_embed);
+    free(input_embeds);
+
+    double prefill_ms = get_time_ms() - t0;
+    if (qwen_verbose >= 2)
+        fprintf(stderr, "  Thinker prefill: %d tokens (%.0f ms)\n", total_seq, prefill_ms);
+
+    /* ---- Autoregressive decode (no asr_text gating — emit ALL tokens) ---- */
+    t0 = get_time_ms();
+    float *tmp_embed = (float *)malloc(dim * sizeof(float));
+    if (!tmp_embed) { qwen_tokenizer_free(tokenizer); return NULL; }
+
+    size_t text_cap = 4096;
+    size_t text_len = 0;
+    char *text = (char *)malloc(text_cap);
+    text[0] = '\0';
+    int n_text_tokens = 0;
+
+    for (int i = 0; i < max_tokens; i++) {
+        if (token == QWEN_TOKEN_ENDOFTEXT || token == QWEN_TOKEN_IM_END) break;
+
+        /* Decode and emit every token (no asr_text gate) */
+        const char *piece = qwen_tokenizer_decode(tokenizer, token);
+        if (piece && piece[0] != '\0') {
+            size_t piece_len = strlen(piece);
+            if (text_len + piece_len + 1 > text_cap) {
+                while (text_len + piece_len + 1 > text_cap) text_cap *= 2;
+                text = (char *)realloc(text, text_cap);
+            }
+            memcpy(text + text_len, piece, piece_len);
+            text_len += piece_len;
+            text[text_len] = '\0';
+            n_text_tokens++;
+
+            if (ctx->token_cb)
+                ctx->token_cb(piece, ctx->token_cb_userdata);
+        }
+
+        /* Embed and generate next token */
+        tok_embed_bf16_to_f32(tmp_embed, ctx->decoder.tok_embeddings_bf16, token, dim);
+        token = qwen_decoder_forward(ctx, tmp_embed);
+    }
+
+    double decode_ms = get_time_ms() - t0;
+    free(tmp_embed);
+    qwen_tokenizer_free(tokenizer);
+
+    if (qwen_verbose >= 2)
+        fprintf(stderr, "  Thinker decode: %d tokens (%.0f ms, %.1f ms/token)\n",
+                n_text_tokens, decode_ms,
+                n_text_tokens > 0 ? decode_ms / n_text_tokens : 0);
+
+    /* ---- Perf stats ---- */
+    double total_ms = get_time_ms() - total_t0;
+    ctx->perf_total_ms = total_ms;
+    ctx->perf_text_tokens = n_text_tokens;
+    ctx->perf_encode_ms = encode_ms;
+    ctx->perf_decode_ms = prefill_ms + decode_ms;
+
     return text;
 }
