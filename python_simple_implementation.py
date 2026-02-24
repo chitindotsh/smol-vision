@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-Standalone inference for Qwen3-ASR (0.6B and 1.7B).
+Standalone inference for Qwen3-ASR and Qwen3-Omni speech-to-text models.
 No transformers dependency - just PyTorch + safetensors + soundfile.
+
+Supported models:
+  - Qwen3-ASR-0.6B  (dense decoder)
+  - Qwen3-ASR-1.7B  (dense decoder)
+  - Qwen3-Omni-30B  (MoE decoder: 128 experts, top-8 routing per layer)
 
 Usage:
     pip install torch safetensors soundfile
     python python_simple_implementation.py qwen3-asr-1.7b samples/test_speech.wav
     python python_simple_implementation.py qwen3-asr-0.6b samples/test_speech.wav
+    python python_simple_implementation.py qwen3-omni-30b samples/test_speech.wav
 
 Reconstructed from HuggingFace transformers modeling code:
   - modeling_qwen3_asr.py (Qwen3ASRAudioEncoder, Qwen3ASRThinkerForConditionalGeneration)
+  - modeling_qwen3_omni_moe.py (Qwen3OmniMoeForConditionalGeneration, MoE routing)
   - Qwen3 text model (GQA, Q/K norms, MRoPE)
 """
 
@@ -34,7 +41,11 @@ def load_config(model_dir):
     ac = tc["audio_config"]
     txc = tc["text_config"]
 
-    return {
+    # Detect MoE architecture
+    num_experts = txc.get("num_experts", 0)
+    is_moe = num_experts > 0
+
+    result = {
         # Audio encoder
         "enc_d_model": ac["d_model"],
         "enc_layers": ac["encoder_layers"],
@@ -58,11 +69,20 @@ def load_config(model_dir):
         "dec_rope_theta": txc["rope_theta"],
         "dec_mrope_section": txc["rope_scaling"]["mrope_section"],
         "dec_vocab_size": txc["vocab_size"],
+        # MoE parameters
+        "is_moe": is_moe,
+        "num_experts": num_experts,
+        "num_experts_per_tok": txc.get("num_experts_per_tok", 0),
+        "moe_intermediate_size": txc.get("moe_intermediate_size", 0),
+        "shared_expert_intermediate_size": txc.get("shared_expert_intermediate_size", 0),
+        "norm_topk_prob": txc.get("norm_topk_prob", False),
+        "decoder_sparse_step": txc.get("decoder_sparse_step", 1),
         # Special tokens
         "audio_start_token_id": tc["audio_start_token_id"],
         "audio_end_token_id": tc["audio_end_token_id"],
         "audio_token_id": tc["audio_token_id"],
     }
+    return result
 
 # ============================================================================
 # Audio preprocessing constants
@@ -487,6 +507,14 @@ class Decoder:
         self.rope_theta = cfg["dec_rope_theta"]
         self.vocab_size = cfg["dec_vocab_size"]
 
+        # MoE parameters
+        self.is_moe = cfg["is_moe"]
+        self.num_experts = cfg["num_experts"]
+        self.num_experts_per_tok = cfg["num_experts_per_tok"]
+        self.moe_intermediate_size = cfg["moe_intermediate_size"]
+        self.norm_topk_prob = cfg["norm_topk_prob"]
+        self.decoder_sparse_step = cfg.get("decoder_sparse_step", 1)
+
         # Load embedding and LM head
         self.tok_embeddings = get_weight(sf, "thinker.model.embed_tokens.weight")
         self.lm_head = get_weight(sf, "thinker.lm_head.weight")
@@ -501,10 +529,18 @@ class Decoder:
 
         self.kv_cache = {}
 
+    def _is_moe_layer(self, layer_idx):
+        """Check if a given layer uses MoE (vs dense MLP)."""
+        if not self.is_moe:
+            return False
+        # decoder_sparse_step=1 means every layer is MoE
+        # decoder_sparse_step=2 would mean every other layer, etc.
+        return (layer_idx % self.decoder_sparse_step) == 0
+
     def _load_layer(self, i):
         sf = self.sf
         lp = f"thinker.model.layers.{i}"
-        return {
+        layer = {
             "input_layernorm": get_weight(sf, f"{lp}.input_layernorm.weight"),
             "post_attention_layernorm": get_weight(sf, f"{lp}.post_attention_layernorm.weight"),
             "q_proj": get_weight(sf, f"{lp}.self_attn.q_proj.weight"),
@@ -513,16 +549,84 @@ class Decoder:
             "o_proj": get_weight(sf, f"{lp}.self_attn.o_proj.weight"),
             "q_norm": get_weight(sf, f"{lp}.self_attn.q_norm.weight"),
             "k_norm": get_weight(sf, f"{lp}.self_attn.k_norm.weight"),
-            "gate_proj": get_weight(sf, f"{lp}.mlp.gate_proj.weight"),
-            "up_proj": get_weight(sf, f"{lp}.mlp.up_proj.weight"),
-            "down_proj": get_weight(sf, f"{lp}.mlp.down_proj.weight"),
         }
+        if self._is_moe_layer(i):
+            # MoE: preload router gate; expert weights loaded on demand
+            layer["gate"] = get_weight(sf, f"{lp}.mlp.gate.weight")
+        else:
+            # Dense MLP
+            layer["gate_proj"] = get_weight(sf, f"{lp}.mlp.gate_proj.weight")
+            layer["up_proj"] = get_weight(sf, f"{lp}.mlp.up_proj.weight")
+            layer["down_proj"] = get_weight(sf, f"{lp}.mlp.down_proj.weight")
+        return layer
 
     def embed_token(self, token_id):
         return self.tok_embeddings[token_id]
 
     def embed_tokens(self, token_ids):
         return self.tok_embeddings[token_ids]
+
+    def _moe_forward(self, x_norm, layer_idx):
+        """MoE FFN forward. x_norm: [seq, hidden_size]. Returns [seq, hidden_size].
+
+        Routes each token to top-k experts, computes SwiGLU for each selected
+        expert, and returns the weighted combination. Expert weights are loaded
+        on demand from the safetensors file to avoid preloading all 128 experts.
+        """
+        L = self.layers[layer_idx]
+        seq_len = x_norm.shape[0]
+
+        # Router: compute logits for all experts
+        router_logits = F.linear(x_norm, L["gate"])  # [seq, num_experts]
+
+        # Select top-k experts per token
+        topk_weights, topk_indices = torch.topk(
+            router_logits, self.num_experts_per_tok, dim=-1
+        )  # both [seq, top_k]
+
+        # Softmax over selected experts to get routing weights
+        topk_weights = F.softmax(topk_weights.float(), dim=-1)
+
+        if self.norm_topk_prob:
+            # Normalize so weights sum to 1 (already guaranteed by softmax,
+            # but this matches the HF implementation which divides by sum)
+            topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-20)
+
+        output = torch.zeros_like(x_norm)
+        lp = f"thinker.model.layers.{layer_idx}"
+
+        # Process each unique expert across all tokens and k-slots
+        unique_experts = topk_indices.unique().tolist()
+
+        for eidx in unique_experts:
+            # Find all (token, k-slot) pairs that selected this expert
+            mask = (topk_indices == eidx)  # [seq, top_k]
+            if not mask.any():
+                continue
+
+            # Get unique tokens that route to this expert
+            token_mask = mask.any(dim=-1)  # [seq]
+            token_indices = token_mask.nonzero(as_tuple=True)[0]
+
+            # Load expert weights on demand (from mmap'd safetensors)
+            gate_w = get_weight(self.sf, f"{lp}.mlp.experts.{eidx}.gate_proj.weight")
+            up_w = get_weight(self.sf, f"{lp}.mlp.experts.{eidx}.up_proj.weight")
+            down_w = get_weight(self.sf, f"{lp}.mlp.experts.{eidx}.down_proj.weight")
+
+            # Batch compute SwiGLU for all tokens routed to this expert
+            x_sel = x_norm[token_indices]  # [n, hidden]
+            expert_out = F.linear(
+                F.silu(F.linear(x_sel, gate_w)) * F.linear(x_sel, up_w),
+                down_w,
+            )  # [n, hidden]
+
+            # Accumulate weighted output for each token
+            # Sum the routing weight across all k-slots that selected this expert
+            for i, tok_idx in enumerate(token_indices):
+                weight = topk_weights[tok_idx][mask[tok_idx]].sum()
+                output[tok_idx] += weight * expert_out[i]
+
+        return output
 
     def _layer_forward(self, h, layer_idx, pos):
         """Single decoder layer forward.
@@ -581,10 +685,13 @@ class Decoder:
         # Pre-FFN RMSNorm
         x_norm = rms_norm(h, L["post_attention_layernorm"], self.eps)
 
-        # SwiGLU MLP
-        gate = F.silu(F.linear(x_norm, L["gate_proj"]))
-        up = F.linear(x_norm, L["up_proj"])
-        h = h + F.linear(gate * up, L["down_proj"])
+        # FFN: MoE or dense SwiGLU
+        if self._is_moe_layer(layer_idx):
+            h = h + self._moe_forward(x_norm, layer_idx)
+        else:
+            gate = F.silu(F.linear(x_norm, L["gate_proj"]))
+            up = F.linear(x_norm, L["up_proj"])
+            h = h + F.linear(gate * up, L["down_proj"])
 
         return h
 
@@ -629,7 +736,7 @@ def load_tokenizer(model_dir):
     # Invert to get id -> string
     id_to_token = {v: k for k, v in vocab.items()}
 
-    # Special tokens from tokenizer_config.json
+    # Special tokens from tokenizer_config.json (if available)
     special_tokens = set()
     tc_path = os.path.join(model_dir, "tokenizer_config.json")
     if os.path.exists(tc_path):
@@ -637,6 +744,11 @@ def load_tokenizer(model_dir):
             tc = json.load(f)
         for tid_str, info in tc.get("added_tokens_decoder", {}).items():
             special_tokens.add(int(tid_str))
+
+    # Hardcoded fallback: known Qwen2/Qwen3 special tokens (IDs 151643+)
+    # These are not in vocab.json and must be filtered during decode.
+    # Ensures correct behavior even without tokenizer_config.json (e.g. Omni models).
+    special_tokens.update(range(151643, 151900))
 
     def decode(token_ids):
         """Decode a list of token IDs to text."""
@@ -704,8 +816,13 @@ def transcribe(model_dir, wav_path):
 
     # Load config
     cfg = load_config(model_dir)
+    model_type = "MoE" if cfg["is_moe"] else "dense"
+    moe_info = ""
+    if cfg["is_moe"]:
+        moe_info = f", {cfg['num_experts']} experts (top-{cfg['num_experts_per_tok']})"
     print(f"Model: enc_d={cfg['enc_d_model']}, enc_layers={cfg['enc_layers']}, "
-          f"dec_hidden={cfg['dec_hidden_size']}, dec_layers={cfg['dec_layers']}", file=sys.stderr)
+          f"dec_hidden={cfg['dec_hidden_size']}, dec_layers={cfg['dec_layers']} "
+          f"({model_type}{moe_info})", file=sys.stderr)
 
     # Mel spectrogram
     mel_filters = torch.tensor(compute_mel_filters(), dtype=torch.float32)
@@ -725,8 +842,10 @@ def transcribe(model_dir, wav_path):
     print(f"Audio embeddings: [{n_audio}, {audio_embeds.shape[1]}]", file=sys.stderr)
 
     # Build prompt: system + user + audio_pad*n_audio + suffix + assistant
-    input_ids = PROMPT_PREFIX + [TOKEN_AUDIO_PAD] * n_audio + PROMPT_SUFFIX
-    print(f"Prompt length: {len(input_ids)} tokens ({n_audio} audio pads)", file=sys.stderr)
+    # Use audio_token_id from config (151676 for ASR models, 151675 for Omni)
+    audio_pad_token = cfg["audio_token_id"]
+    input_ids = PROMPT_PREFIX + [audio_pad_token] * n_audio + PROMPT_SUFFIX
+    print(f"Prompt length: {len(input_ids)} tokens ({n_audio} audio pads, pad_id={audio_pad_token})", file=sys.stderr)
 
     # Load decoder
     print("Loading decoder...", file=sys.stderr)
@@ -737,7 +856,7 @@ def transcribe(model_dir, wav_path):
     input_embeds = decoder.embed_tokens(input_ids_t)  # [prompt_len, hidden_size]
 
     # Replace audio_pad positions with audio embeddings
-    audio_mask = (input_ids_t == TOKEN_AUDIO_PAD)
+    audio_mask = (input_ids_t == audio_pad_token)
     audio_positions = audio_mask.nonzero(as_tuple=True)[0]
     assert len(audio_positions) == n_audio, f"Expected {n_audio} audio positions, got {len(audio_positions)}"
     input_embeds[audio_positions] = audio_embeds
