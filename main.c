@@ -68,6 +68,10 @@ static void usage(const char *prog) {
     fprintf(stderr, "  --thinker              Thinker mode: free-form text generation (not ASR)\n");
     fprintf(stderr, "  --text <str>           Text input for thinker mode (instead of/with audio)\n");
     fprintf(stderr, "  --max-tokens <n>       Max generation tokens for thinker mode (default: 2048)\n");
+    fprintf(stderr, "  --temperature <f>      Sampling temperature (0 = greedy; default: 0.7) [thinker]\n");
+    fprintf(stderr, "  --temp <f>             Alias for --temperature\n");
+    fprintf(stderr, "  --repeat-penalty <f>   Repetition penalty (1.0 = off; default: 1.1) [thinker]\n");
+    fprintf(stderr, "  --top-k <n>            Top-k sampling filter (0 = off; default: 40) [thinker]\n");
     fprintf(stderr, "  --moe-preload  Pre-fault all MoE expert pages into RAM (high memory)\n");
     fprintf(stderr, "  --monitor     Show inline Unicode symbols on stderr (streaming diagnostics)\n");
     fprintf(stderr, "  --debug       Debug output (per-layer details)\n");
@@ -96,6 +100,9 @@ int main(int argc, char **argv) {
     int thinker_mode = 0;
     const char *thinker_text = NULL;
     int thinker_max_tokens = -1;
+    float temperature = -1.0f;     /* -1 = use default (0.7) */
+    float repetition_penalty = -1.0f; /* -1 = use default (1.1) */
+    int top_k = -1;               /* -1 = use default (40) */
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -139,6 +146,12 @@ int main(int argc, char **argv) {
             thinker_text = argv[++i];
         } else if (strcmp(argv[i], "--max-tokens") == 0 && i + 1 < argc) {
             thinker_max_tokens = atoi(argv[++i]);
+        } else if ((strcmp(argv[i], "--temperature") == 0 || strcmp(argv[i], "--temp") == 0) && i + 1 < argc) {
+            temperature = (float)atof(argv[++i]);
+        } else if (strcmp(argv[i], "--repeat-penalty") == 0 && i + 1 < argc) {
+            repetition_penalty = (float)atof(argv[++i]);
+        } else if (strcmp(argv[i], "--top-k") == 0 && i + 1 < argc) {
+            top_k = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--monitor") == 0) {
             qwen_monitor = 1;
         } else if (strcmp(argv[i], "--debug") == 0) {
@@ -216,6 +229,9 @@ int main(int argc, char **argv) {
     if (skip_silence) ctx->skip_silence = 1;
     if (thinker_mode) ctx->thinker_mode = 1;
     if (thinker_max_tokens > 0) ctx->thinker_max_tokens = thinker_max_tokens;
+    if (temperature >= 0.0f) ctx->temperature = temperature;
+    if (repetition_penalty >= 0.0f) ctx->repetition_penalty = repetition_penalty;
+    if (top_k >= 0) ctx->top_k = top_k;
     if (prompt_text && qwen_set_prompt(ctx, prompt_text) != 0) {
         fprintf(stderr, "Failed to set --prompt text\n");
         qwen_free(ctx);

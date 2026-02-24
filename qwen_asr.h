@@ -251,6 +251,9 @@ typedef struct {
     int moe_preload;               /* 1=madvise all expert pages into RAM */
     int thinker_mode;              /* 1=thinker/chat mode (no asr_text gating) */
     int thinker_max_tokens;        /* max generation tokens in thinker mode (default 2048) */
+    float temperature;             /* sampling temperature (0 = greedy, default 0.7) */
+    float repetition_penalty;      /* penalty for recent tokens (1.0 = off, default 1.1) */
+    int top_k;                     /* top-k filter (0 = off, default 40) */
 
     /* Optional prompt/language controls */
     char *prompt;                  /* system prompt text (UTF-8) */
@@ -354,6 +357,9 @@ void qwen_decoder_prefill(qwen_ctx_t *ctx, const float *input_embeds, int seq_le
 
 /* Decoder forward (single token, uses KV cache, returns greedy token) */
 int qwen_decoder_forward(qwen_ctx_t *ctx, const float *input_embed);
+
+/* Decoder forward producing full logits (for sampling paths) */
+void qwen_decoder_forward_logits(qwen_ctx_t *ctx, const float *input_embed, float *logits);
 
 /* Global verbose flag */
 extern int qwen_verbose;

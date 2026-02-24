@@ -683,3 +683,101 @@ int qwen_decoder_forward(qwen_ctx_t *ctx, const float *input_embed) {
     qwen_rms_norm(x, x, dec->norm, 1, dim, eps);
     return qwen_argmax_matvec_bf16(x, dec->tok_embeddings_bf16, dim, cfg->vocab_size);
 }
+
+/* ========================================================================
+ * Decoder Forward — Full Logits Variant (for sampling paths)
+ * ======================================================================== */
+
+void qwen_decoder_forward_logits(qwen_ctx_t *ctx, const float *input_embed, float *logits) {
+    qwen_decoder_t *dec = &ctx->decoder;
+    const qwen_config_t *cfg = &ctx->config;
+    int dim = cfg->dec_hidden;
+    int n_heads = cfg->dec_heads;
+    int n_kv_heads = cfg->dec_kv_heads;
+    int head_dim = cfg->dec_head_dim;
+    int intermediate = cfg->dec_intermediate;
+    float eps = cfg->dec_rms_norm_eps;
+    float theta = cfg->dec_rope_theta;
+    int q_dim = n_heads * head_dim;
+    int kv_dim = n_kv_heads * head_dim;
+
+    ensure_dec_buffers(ctx);
+    float *x = ctx->dec_x;
+    float *x_norm = ctx->dec_x_norm;
+    float *q = ctx->dec_q;
+    float *k = ctx->dec_k;
+    float *v = ctx->dec_v;
+    float *attn_out = ctx->dec_attn_out;
+    float *proj_out = ctx->dec_proj_out;
+    float *gate_buf = ctx->dec_gate;
+    float *ffn_out = ctx->dec_ffn_out;
+    memcpy(x, input_embed, dim * sizeof(float));
+
+    int pos = ctx->kv_cache_len;
+
+    if (pos >= ctx->kv_cache_max) {
+        if (kv_cache_grow(ctx, pos + 1024) != 0) {
+            /* On failure, produce zero logits */
+            memset(logits, 0, (size_t)cfg->vocab_size * sizeof(float));
+            return;
+        }
+    }
+
+    if (ensure_rope_cache(ctx, pos + 1, head_dim, theta) != 0) {
+        memset(logits, 0, (size_t)cfg->vocab_size * sizeof(float));
+        return;
+    }
+    const float *rope_cos = ctx->rope_cache_cos + (size_t)pos * head_dim;
+    const float *rope_sin = ctx->rope_cache_sin + (size_t)pos * head_dim;
+
+    float scale = 1.0f / sqrtf((float)head_dim);
+
+    for (int layer = 0; layer < cfg->dec_layers; layer++) {
+        qwen_dec_layer_t *l = &dec->layers[layer];
+
+        qwen_rms_norm(x_norm, x, l->input_norm, 1, dim, eps);
+        qwen_linear_nobias_bf16_qkv(q, k, v, x_norm,
+                                    l->wq_weight_bf16,
+                                    l->wk_weight_bf16,
+                                    l->wv_weight_bf16,
+                                    dim, q_dim, kv_dim);
+
+        qwen_rms_norm_per_head(q, l->q_norm_weight, 1, n_heads, head_dim, eps);
+        qwen_rms_norm_per_head(k, l->k_norm_weight, 1, n_kv_heads, head_dim, eps);
+
+        qwen_apply_rope_neox(q, rope_cos, rope_sin, 1, n_heads, head_dim);
+        qwen_apply_rope_neox(k, rope_cos, rope_sin, 1, n_kv_heads, head_dim);
+
+        memcpy(kv_cache_k_at(ctx, layer, pos), k, kv_dim * sizeof(float));
+        memcpy(kv_cache_v_at(ctx, layer, pos), v, kv_dim * sizeof(float));
+
+        int total_seq = pos + 1;
+        float *full_k = kv_cache_k_at(ctx, layer, 0);
+        float *full_v = kv_cache_v_at(ctx, layer, 0);
+
+        qwen_causal_attention(attn_out, q, full_k, full_v,
+                               1, total_seq, n_heads, n_kv_heads,
+                               head_dim, scale, pos);
+
+        qwen_linear_nobias_bf16(proj_out, attn_out, l->wo_weight_bf16, 1, q_dim, dim);
+        qwen_add_inplace(x, proj_out, dim);
+
+        qwen_rms_norm(x_norm, x, l->post_attn_norm, 1, dim, eps);
+
+        if (cfg->is_moe) {
+            moe_forward_single(ctx, x, x_norm, l);
+        } else {
+            qwen_linear_nobias_bf16(gate_buf, x_norm, l->gate_up_fused_bf16,
+                                     1, dim, 2 * intermediate);
+            qwen_swiglu_multiply(gate_buf, gate_buf, 1, intermediate);
+            qwen_linear_nobias_bf16(ffn_out, gate_buf, l->down_weight_bf16, 1, intermediate, dim);
+            qwen_add_inplace(x, ffn_out, dim);
+        }
+    }
+
+    ctx->kv_cache_len = pos + 1;
+
+    /* Final norm + full lm_head matmul → logits */
+    qwen_rms_norm(x, x, dec->norm, 1, dim, eps);
+    qwen_matmul_t_bf16(logits, x, dec->tok_embeddings_bf16, 1, dim, cfg->vocab_size);
+}

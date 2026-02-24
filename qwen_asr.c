@@ -267,6 +267,9 @@ qwen_ctx_t *qwen_load(const char *model_dir) {
     ctx->skip_silence = 0;
     ctx->thinker_mode = 0;
     ctx->thinker_max_tokens = 2048;
+    ctx->temperature = 0.7f;
+    ctx->repetition_penalty = 1.1f;
+    ctx->top_k = 40;
 
     if (qwen_verbose >= 1) fprintf(stderr, "Model loaded.\n");
     return ctx;
@@ -2237,6 +2240,79 @@ char *qwen_transcribe_stdin(qwen_ctx_t *ctx) {
 }
 
 /* ========================================================================
+ * Token Sampling (for thinker mode)
+ * ======================================================================== */
+
+/* Repetition penalty + temperature + top-k + softmax + multinomial sample.
+ * recent_tokens: last N generated token IDs for repetition penalty.
+ * n_recent: number of valid entries in recent_tokens.
+ * Returns sampled token index. */
+static int sample_token(float *logits, int vocab_size,
+                        const int *recent_tokens, int n_recent,
+                        float temperature, float repetition_penalty, int top_k) {
+    /* 1. Repetition penalty: penalize recently seen tokens */
+    if (repetition_penalty != 1.0f && n_recent > 0) {
+        for (int i = 0; i < n_recent; i++) {
+            int tid = recent_tokens[i];
+            if (tid < 0 || tid >= vocab_size) continue;
+            if (logits[tid] > 0.0f)
+                logits[tid] /= repetition_penalty;
+            else
+                logits[tid] *= repetition_penalty;
+        }
+    }
+
+    /* 2. Temperature scaling */
+    if (temperature > 0.0f && temperature != 1.0f) {
+        for (int i = 0; i < vocab_size; i++)
+            logits[i] /= temperature;
+    }
+
+    /* 3. Top-k filtering */
+    if (top_k > 0 && top_k < vocab_size) {
+        /* Find k-th largest value via partial selection */
+        float kth = -1e30f;
+        /* Simple partial sort: maintain top_k largest values */
+        float *topk_vals = (float *)malloc(top_k * sizeof(float));
+        for (int i = 0; i < top_k; i++) topk_vals[i] = -1e30f;
+        float topk_min = -1e30f;
+        int topk_min_idx = 0;
+        for (int i = 0; i < vocab_size; i++) {
+            if (logits[i] > topk_min) {
+                topk_vals[topk_min_idx] = logits[i];
+                /* Find new min in topk_vals */
+                topk_min = topk_vals[0];
+                topk_min_idx = 0;
+                for (int j = 1; j < top_k; j++) {
+                    if (topk_vals[j] < topk_min) {
+                        topk_min = topk_vals[j];
+                        topk_min_idx = j;
+                    }
+                }
+            }
+        }
+        kth = topk_min;
+        free(topk_vals);
+
+        for (int i = 0; i < vocab_size; i++) {
+            if (logits[i] < kth) logits[i] = -1e30f;
+        }
+    }
+
+    /* 4. Softmax */
+    qwen_softmax(logits, 1, vocab_size);
+
+    /* 5. Multinomial sampling */
+    double r = drand48();
+    double cumsum = 0.0;
+    for (int i = 0; i < vocab_size; i++) {
+        cumsum += (double)logits[i];
+        if (cumsum >= r) return i;
+    }
+    return vocab_size - 1; /* fallback */
+}
+
+/* ========================================================================
  * Thinker Mode — Free-Form Text Generation
  * ======================================================================== */
 
@@ -2424,15 +2500,37 @@ char *qwen_thinker_generate(qwen_ctx_t *ctx,
     }
     free(user_tokens);
 
+    /* ---- Sampling parameters ---- */
+    float temperature = ctx->temperature;
+    float rep_penalty = ctx->repetition_penalty;
+    int top_k_param = ctx->top_k;
+    int use_sampling = (temperature > 0.0f);
+
+    /* Seed PRNG for sampling (use time-based seed) */
+    if (use_sampling) srand48((long)get_time_ms());
+
     /* ---- Decoder prefill ---- */
     double t0 = get_time_ms();
     ctx->kv_cache_len = 0;
     int prefill_len = total_seq - 1;
     qwen_decoder_prefill(ctx, input_embeds, prefill_len);
 
+    /* Allocate logits buffer and recent-token window for sampling */
+    float *logits = (float *)malloc((size_t)cfg->vocab_size * sizeof(float));
+    int rep_window = 64; /* recent token window size for repetition penalty */
+    int *recent_tokens = (int *)malloc(rep_window * sizeof(int));
+    int n_recent = 0;
+
     /* First token from last prefill position */
     float *last_embed = input_embeds + (size_t)prefill_len * dim;
-    int token = qwen_decoder_forward(ctx, last_embed);
+    int token;
+    if (use_sampling) {
+        qwen_decoder_forward_logits(ctx, last_embed, logits);
+        token = sample_token(logits, cfg->vocab_size, recent_tokens, n_recent,
+                             temperature, rep_penalty, top_k_param);
+    } else {
+        token = qwen_decoder_forward(ctx, last_embed);
+    }
     free(input_embeds);
 
     double prefill_ms = get_time_ms() - t0;
@@ -2442,7 +2540,10 @@ char *qwen_thinker_generate(qwen_ctx_t *ctx,
     /* ---- Autoregressive decode (no asr_text gating — emit ALL tokens) ---- */
     t0 = get_time_ms();
     float *tmp_embed = (float *)malloc(dim * sizeof(float));
-    if (!tmp_embed) { qwen_tokenizer_free(tokenizer); return NULL; }
+    if (!tmp_embed) {
+        free(logits); free(recent_tokens);
+        qwen_tokenizer_free(tokenizer); return NULL;
+    }
 
     size_t text_cap = 4096;
     size_t text_len = 0;
@@ -2452,6 +2553,14 @@ char *qwen_thinker_generate(qwen_ctx_t *ctx,
 
     for (int i = 0; i < max_tokens; i++) {
         if (token == QWEN_TOKEN_ENDOFTEXT || token == QWEN_TOKEN_IM_END) break;
+
+        /* Track recent tokens for repetition penalty */
+        if (n_recent < rep_window) {
+            recent_tokens[n_recent++] = token;
+        } else {
+            memmove(recent_tokens, recent_tokens + 1, (rep_window - 1) * sizeof(int));
+            recent_tokens[rep_window - 1] = token;
+        }
 
         /* Decode and emit every token (no asr_text gate) */
         const char *piece = qwen_tokenizer_decode(tokenizer, token);
@@ -2472,11 +2581,19 @@ char *qwen_thinker_generate(qwen_ctx_t *ctx,
 
         /* Embed and generate next token */
         tok_embed_bf16_to_f32(tmp_embed, ctx->decoder.tok_embeddings_bf16, token, dim);
-        token = qwen_decoder_forward(ctx, tmp_embed);
+        if (use_sampling) {
+            qwen_decoder_forward_logits(ctx, tmp_embed, logits);
+            token = sample_token(logits, cfg->vocab_size, recent_tokens, n_recent,
+                                 temperature, rep_penalty, top_k_param);
+        } else {
+            token = qwen_decoder_forward(ctx, tmp_embed);
+        }
     }
 
     double decode_ms = get_time_ms() - t0;
     free(tmp_embed);
+    free(logits);
+    free(recent_tokens);
     qwen_tokenizer_free(tokenizer);
 
     if (qwen_verbose >= 2)
