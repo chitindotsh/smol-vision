@@ -160,6 +160,13 @@ typedef struct {
 
     /* MoE router gate (NULL for dense layers) */
     float *moe_gate_weight;    /* [num_experts, hidden] router gate (f32) */
+
+    /* Pre-resolved MoE expert weight pointers (NULL for dense layers) */
+    struct qwen_moe_expert_ptrs {
+        uint16_t *gate_proj;   /* [moe_intermediate, hidden] bf16 mmap */
+        uint16_t *up_proj;     /* [moe_intermediate, hidden] bf16 mmap */
+        uint16_t *down_proj;   /* [hidden, moe_intermediate] bf16 mmap */
+    } *moe_experts;            /* [num_experts] pre-resolved, NULL for dense */
 } qwen_dec_layer_t;
 
 typedef struct {
@@ -241,6 +248,7 @@ typedef struct {
     int past_text_conditioning;    /* 1=enable past text conditioning in -S/--stream (default: off).
                                     * In segmented mode, this also enables boundary cleanup/post-processing. */
     int skip_silence;              /* 1=drop long silent spans before transcription */
+    int moe_preload;               /* 1=madvise all expert pages into RAM */
 
     /* Optional prompt/language controls */
     char *prompt;                  /* system prompt text (UTF-8) */
@@ -284,6 +292,10 @@ qwen_ctx_t *qwen_load(const char *model_dir);
 
 /* Free all resources */
 void qwen_free(qwen_ctx_t *ctx);
+
+/* Pre-fault all MoE expert pages into RAM via madvise(MADV_WILLNEED).
+ * No-op for dense (non-MoE) models. */
+void qwen_moe_preload(qwen_ctx_t *ctx);
 
 /* Set a callback to receive each decoded token as it's generated.
  * Set cb=NULL to disable. The callback is invoked during transcription. */

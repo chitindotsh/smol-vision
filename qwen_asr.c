@@ -308,6 +308,7 @@ void qwen_free(qwen_ctx_t *ctx) {
         FREE0(l->input_norm); FREE0(l->post_attn_norm);
         FREE0(l->gate_up_fused_bf16);
         FREE0(l->moe_gate_weight);
+        FREE0(l->moe_experts);
     }
     FREE0(ctx->decoder.norm);
 
@@ -353,6 +354,17 @@ void qwen_free(qwen_ctx_t *ctx) {
     }
 
     free(ctx);
+}
+
+/* ========================================================================
+ * MoE Preload
+ * ======================================================================== */
+
+extern void qwen_decoder_moe_preload(qwen_decoder_t *dec, const qwen_config_t *cfg);
+
+void qwen_moe_preload(qwen_ctx_t *ctx) {
+    if (!ctx || !ctx->config.is_moe) return;
+    qwen_decoder_moe_preload(&ctx->decoder, &ctx->config);
 }
 
 /* ========================================================================

@@ -65,6 +65,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  --prompt <text>            System prompt for biasing (example: \"Preserve spelling: CPU, CUDA, PostgreSQL, Redis\")\n");
     fprintf(stderr, "  --language <lang>          Force output language via token conditioning\n");
     fprintf(stderr, "                             (usually auto-detected if omitted)\n");
+    fprintf(stderr, "  --moe-preload  Pre-fault all MoE expert pages into RAM (high memory)\n");
     fprintf(stderr, "  --monitor     Show inline Unicode symbols on stderr (streaming diagnostics)\n");
     fprintf(stderr, "  --debug       Debug output (per-layer details)\n");
     fprintf(stderr, "  --silent      No status output (only final transcription on stdout)\n");
@@ -87,6 +88,7 @@ int main(int argc, char **argv) {
     const char *force_language = NULL;
     int past_text_conditioning_mode = -1; /* -1 auto, 0 off, 1 on */
     int skip_silence = 0;
+    int moe_preload = 0;
     int emit_tokens = 1;
 
     for (int i = 1; i < argc; i++) {
@@ -123,6 +125,8 @@ int main(int argc, char **argv) {
             force_language = argv[++i];
         } else if (strcmp(argv[i], "--stdin") == 0) {
             use_stdin = 1;
+        } else if (strcmp(argv[i], "--moe-preload") == 0) {
+            moe_preload = 1;
         } else if (strcmp(argv[i], "--monitor") == 0) {
             qwen_monitor = 1;
         } else if (strcmp(argv[i], "--debug") == 0) {
@@ -169,6 +173,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to load model from %s\n", model_dir);
         return 1;
     }
+
+    /* Pre-fault MoE expert pages if requested */
+    if (moe_preload) qwen_moe_preload(ctx);
 
     /* Apply segmentation settings */
     if (segment_sec >= 0) ctx->segment_sec = segment_sec;
