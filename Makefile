@@ -17,7 +17,7 @@ TARGET = qwen_asr
 # Debug build flags
 DEBUG_CFLAGS = -Wall -Wextra -g -O0 -DDEBUG -fsanitize=address
 
-.PHONY: all clean debug info help blas test test-stream-cache
+.PHONY: all clean debug info help blas test test_thinker test-stream-cache
 
 # Default: show available targets
 all: help
@@ -31,6 +31,7 @@ help:
 	@echo "Other targets:"
 	@echo "  make debug    - Debug build with AddressSanitizer"
 	@echo "  make test     - Run regression suite (requires ./qwen_asr and model files)"
+	@echo "  make test_thinker - Run thinker mode tests (Qwen2.5-Omni-7B)"
 	@echo "  make test-stream-cache - Run stream cache on/off equivalence check"
 	@echo "  make clean    - Remove build artifacts"
 	@echo "  make info     - Show build configuration"
@@ -89,6 +90,9 @@ test:
 	# ./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-1.7b
 	# ./asr_regression.py --binary ./qwen_asr --model-dir qwen2.5-omni-7b
 	./asr_regression.py --binary ./qwen_asr --model-dir qwen3-omni-30b
+
+test_thinker:
+	./thinker_regression.py --binary ./qwen_asr --model-dir qwen2.5-omni-7b
 
 # =============================================================================
 # Dependencies
