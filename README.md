@@ -1,5 +1,7 @@
 # Qwen3-ASR Pure C Implementation
 
+*Note*: This is an experimental branch implementing a "thinker" mode using Omni models. Read THINKER.md for more details. Use the upstream branch https://github.com/antirez/qwen-asr for stability.
+
 This is a C implementation of the inference pipeline for [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) speech-to-text models (both 0.6B and 1.7B). It has zero external dependencies beyond the C standard library and a BLAS implementation (Accelerate on macOS, OpenBLAS on Linux). Tokens stream to stdout as they are generated. The implementation runs at speed multiple of the file length even in very modest hardware, like low end Intel or AMD processor.
 
 **Important**: this implementation explicitly **avoids implementing support for MPS**. Transcription systems are very important pieces of infrastructure, and are often run on remote Linux servers. Adding the MPS target would focus the efforts too much on Apple hardware, so for now I'm skipping it. The code runs very well anyway on Apple hardware (NEON optimized). Please, **don't send pull requests** about this feature, fork the code instead, in order to add MPS support. I'll add it much later when the other optimizations are already mature.
