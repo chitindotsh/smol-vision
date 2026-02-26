@@ -1,5 +1,5 @@
 /*
- * qwen_asr_kernels_impl.h - internal architecture dispatch for hot kernels
+ * common_kernels_impl.h - internal architecture dispatch for hot kernels
  */
 
 #ifndef QWEN_ASR_KERNELS_IMPL_H

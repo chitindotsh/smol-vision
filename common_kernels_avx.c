@@ -1,5 +1,5 @@
 /*
- * qwen_asr_kernels_avx.c - x86 SIMD hot kernels (AVX2+FMA, with AVX-512 when available)
+ * common_kernels_avx.c - x86 SIMD hot kernels (AVX2+FMA, with AVX-512 when available)
  *
  * bf16→f32 conversion: load 16 uint16 → zero-extend to 32-bit → shift left 16.
  * Uses AVX-512F+BW for 16-wide bf16 matvec/argmax (dominant for seq_len==1), and
@@ -9,7 +9,7 @@
  * overhead and improve out-of-order execution on memory-bound workloads.
  */
 
-#include "qwen_asr_kernels_impl.h"
+#include "common_kernels_impl.h"
 
 #if defined(__AVX2__) && defined(__FMA__)
 

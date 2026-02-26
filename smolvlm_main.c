@@ -5,7 +5,7 @@
  */
 
 #include "smolvlm.h"
-#include "qwen_asr_kernels.h"
+#include "common_kernels.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

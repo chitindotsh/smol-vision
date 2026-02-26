@@ -12,8 +12,8 @@
  */
 
 #include "smolvlm.h"
-#include "qwen_asr_kernels.h"
-#include "qwen_asr_safetensors.h"
+#include "common_kernels.h"
+#include "common_safetensors.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

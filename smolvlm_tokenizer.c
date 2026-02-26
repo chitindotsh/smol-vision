@@ -2,7 +2,7 @@
  * smolvlm_tokenizer.c - GPT-2 BPE tokenizer for SmolVLM
  *
  * Loads vocab + merges from tokenizer.json (HuggingFace fast tokenizer format).
- * Uses same GPT-2 byte-level BPE algorithm as qwen_asr_tokenizer.c.
+ * Uses GPT-2 byte-level BPE algorithm.
  */
 
 #include "smolvlm_tokenizer.h"

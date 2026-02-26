@@ -1,9 +1,9 @@
 /*
- * qwen_asr_safetensors.c - Safetensors reader with multi-shard support
+ * common_safetensors.c - Safetensors reader with multi-shard support
  * Adapted from voxtral-realtime project.
  */
 
-#include "qwen_asr_safetensors.h"
+#include "common_safetensors.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

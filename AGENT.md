@@ -22,7 +22,7 @@ When docs and code disagree, trust these files first:
 - Model loading and generation orchestration: `smolvlm.c`
 - Vision encoder math + load path: `smolvlm_vision.c`
 - Decoder math + KV cache path: `smolvlm_decoder.c`
-- Kernel dispatch and hot loops: `qwen_asr_kernels*.c`, `qwen_asr_kernels_impl.h`
+- Kernel dispatch and hot loops: `common_kernels*.c`, `common_kernels_impl.h`
 - Image loading pipeline: `smolvlm_image.c`
 - Tokenizer encode/decode: `smolvlm_tokenizer.c`
 - Image loading tests: `test_smolvlm_images.c`
@@ -98,17 +98,17 @@ From `smolvlm_generate()` and CLI:
 - `smolvlm_tokenizer.c`
   - GPT-2 byte-level BPE from tokenizer.json
   - encode text to token IDs, decode token IDs to text
-- `qwen_asr_kernels.c`
+- `common_kernels.c`
   - common math, threading, BLAS paths (shared from qwen-asr)
-- `qwen_asr_kernels_generic.c`
+- `common_kernels_generic.c`
   - generic hot kernels
-- `qwen_asr_kernels_neon.c`
+- `common_kernels_neon.c`
   - ARM NEON hot kernels
-- `qwen_asr_kernels_avx.c`
+- `common_kernels_avx.c`
   - x86 AVX hot kernels
-- `qwen_asr_kernels_impl.h`
+- `common_kernels_impl.h`
   - architecture dispatch macros
-- `qwen_asr_safetensors.c`
+- `common_safetensors.c`
   - multi-shard safetensors loader with mmap
 - `stb_image.h`
   - single-header image library (v2.30, public domain)
@@ -168,12 +168,12 @@ Inference: <ms> ms, <tokens> tokens (<tok/s> tok/s, encoding: <ms>ms, decoding: 
 
 ## Kernel/Optimization Rules
 
-- Architecture dispatch is centralized in `qwen_asr_kernels_impl.h`.
+- Architecture dispatch is centralized in `common_kernels_impl.h`.
 - Keep generic/NEON/AVX variants functionally equivalent.
 - If you optimize one path, verify no regression on others.
 - Favor meaningful speedups; avoid complexity for tiny wins.
-- The kernel files retain the `qwen_asr_` prefix since they are shared
-  infrastructure originating from the qwen-asr project.
+- The kernel files use the `common_` prefix (originally `qwen_asr_` from
+  the qwen-asr project). Function names retain the `qwen_` prefix.
 
 ## Prompt Template
 

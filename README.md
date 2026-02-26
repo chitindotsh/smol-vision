@@ -121,8 +121,8 @@ make test-images
 | `smolvlm_image.c` | Image loading (stb_image), resize, normalize |
 | `smolvlm_tokenizer.c` | BPE tokenizer (from tokenizer.json) |
 | `smolvlm_main.c` | CLI entry point |
-| `qwen_asr_kernels*.c` | SIMD-optimized math kernels (generic/NEON/AVX) |
-| `qwen_asr_safetensors.c` | Safetensors loader with mmap |
+| `common_kernels*.c` | SIMD-optimized math kernels (generic/NEON/AVX) |
+| `common_safetensors.c` | Safetensors loader with mmap |
 | `python_smolvlm.py` | Python reference implementation |
 | `img_downloader.py` | Test image downloader |
 | `test_smolvlm_images.c` | Image loading test suite |

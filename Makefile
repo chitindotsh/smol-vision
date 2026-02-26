@@ -10,8 +10,8 @@ UNAME_S := $(shell uname -s)
 
 # Source files
 SRCS = smolvlm.c smolvlm_vision.c smolvlm_decoder.c smolvlm_image.c smolvlm_tokenizer.c \
-       qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c \
-       qwen_asr_kernels_avx.c qwen_asr_safetensors.c
+       common_kernels.c common_kernels_generic.c common_kernels_neon.c \
+       common_kernels_avx.c common_safetensors.c
 OBJS = $(SRCS:.c=.o)
 MAIN = smolvlm_main.c
 TARGET = smolvlm
@@ -101,14 +101,14 @@ endif
 # =============================================================================
 # Dependencies
 # =============================================================================
-smolvlm.o: smolvlm.c smolvlm.h smolvlm_tokenizer.h qwen_asr_kernels.h qwen_asr_safetensors.h
-smolvlm_vision.o: smolvlm_vision.c smolvlm.h qwen_asr_kernels.h qwen_asr_safetensors.h
-smolvlm_decoder.o: smolvlm_decoder.c smolvlm.h qwen_asr_kernels.h qwen_asr_safetensors.h
+smolvlm.o: smolvlm.c smolvlm.h smolvlm_tokenizer.h common_kernels.h common_safetensors.h
+smolvlm_vision.o: smolvlm_vision.c smolvlm.h common_kernels.h common_safetensors.h
+smolvlm_decoder.o: smolvlm_decoder.c smolvlm.h common_kernels.h common_safetensors.h
 smolvlm_image.o: smolvlm_image.c smolvlm.h stb_image.h
 smolvlm_tokenizer.o: smolvlm_tokenizer.c smolvlm_tokenizer.h
-smolvlm_main.o: smolvlm_main.c smolvlm.h qwen_asr_kernels.h
-qwen_asr_kernels.o: qwen_asr_kernels.c qwen_asr_kernels.h qwen_asr_kernels_impl.h
-qwen_asr_kernels_generic.o: qwen_asr_kernels_generic.c qwen_asr_kernels_impl.h
-qwen_asr_kernels_neon.o: qwen_asr_kernels_neon.c qwen_asr_kernels_impl.h
-qwen_asr_kernels_avx.o: qwen_asr_kernels_avx.c qwen_asr_kernels_impl.h
-qwen_asr_safetensors.o: qwen_asr_safetensors.c qwen_asr_safetensors.h
+smolvlm_main.o: smolvlm_main.c smolvlm.h common_kernels.h
+common_kernels.o: common_kernels.c common_kernels.h common_kernels_impl.h
+common_kernels_generic.o: common_kernels_generic.c common_kernels_impl.h
+common_kernels_neon.o: common_kernels_neon.c common_kernels_impl.h
+common_kernels_avx.o: common_kernels_avx.c common_kernels_impl.h
+common_safetensors.o: common_safetensors.c common_safetensors.h
