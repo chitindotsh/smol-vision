@@ -249,9 +249,11 @@ void smolvlm_free(smolvlm_ctx_t *ctx);
 /* Set token streaming callback */
 void smolvlm_set_token_callback(smolvlm_ctx_t *ctx, smolvlm_token_cb cb, void *userdata);
 
-/* Generate text from image + prompt. Returns allocated string (caller must free). */
+/* Generate text from image + prompt. Returns allocated string (caller must free).
+ * system_prompt may be NULL for no system prompt. */
 char *smolvlm_generate(smolvlm_ctx_t *ctx, const char *image_path,
-                        const char *prompt, int max_tokens);
+                        const char *prompt, const char *system_prompt,
+                        int max_tokens);
 
 /* ========================================================================
  * Internal Functions (used across translation units)

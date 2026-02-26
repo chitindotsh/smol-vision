@@ -326,7 +326,8 @@ static double time_ms(void) {
 }
 
 char *smolvlm_generate(smolvlm_ctx_t *ctx, const char *image_path,
-                        const char *prompt, int max_tokens) {
+                        const char *prompt, const char *system_prompt,
+                        int max_tokens) {
     const smolvlm_config_t *cfg = &ctx->config;
     int hidden = cfg->dec_hidden;
 
@@ -357,7 +358,18 @@ char *smolvlm_generate(smolvlm_ctx_t *ctx, const char *image_path,
     }
 
     /* ---- Build prompt token sequence ---- */
-    /* Format: <|im_start|>User:<fake_image><image>...<image><fake_image>prompt<eos>\nAssistant: */
+    /* With system prompt:
+     *   <|im_start|>System:{sys}<eos>\n<|im_start|>User:<fake><image>x81<fake>{prompt}<eos>\nAssistant:
+     * Without:
+     *   <|im_start|>User:<fake><image>x81<fake>{prompt}<eos>\nAssistant:
+     */
+    int n_sys_role = 0, n_sys_text = 0;
+    int *sys_role_toks = NULL, *sys_text_toks = NULL;
+    if (system_prompt && system_prompt[0]) {
+        sys_role_toks = smolvlm_tokenizer_encode(ctx->tokenizer, "System:", &n_sys_role);
+        sys_text_toks = smolvlm_tokenizer_encode(ctx->tokenizer, system_prompt, &n_sys_text);
+    }
+
     int n_user, n_prompt_text, n_newline, n_assistant;
     int *user_toks = smolvlm_tokenizer_encode(ctx->tokenizer, "User:", &n_user);
     int *prompt_toks = smolvlm_tokenizer_encode(ctx->tokenizer, prompt, &n_prompt_text);
@@ -365,15 +377,31 @@ char *smolvlm_generate(smolvlm_ctx_t *ctx, const char *image_path,
     int *asst_toks = smolvlm_tokenizer_encode(ctx->tokenizer, "Assistant:", &n_assistant);
 
     int n_image_tokens = cfg->image_seq_len;
-    int total_prompt = 1 + n_user + 1 + n_image_tokens + 1 + n_prompt_text + 1 + n_newline + n_assistant;
+    /* System turn: <|im_start|> System: {sys} <eos> \n */
+    int n_sys_part = 0;
+    if (sys_text_toks)
+        n_sys_part = 1 + n_sys_role + n_sys_text + 1 + n_newline;
+    int total_prompt = n_sys_part + 1 + n_user + 1 + n_image_tokens + 1 + n_prompt_text + 1 + n_newline + n_assistant;
     int *prompt_ids = (int *)malloc(total_prompt * sizeof(int));
     if (!prompt_ids) {
         free(vis_embeds);
+        free(sys_role_toks); free(sys_text_toks);
         free(user_toks); free(prompt_toks); free(nl_toks); free(asst_toks);
         return NULL;
     }
 
     int pos = 0;
+
+    /* System turn (if provided) */
+    if (sys_text_toks) {
+        prompt_ids[pos++] = SMOLVLM_TOKEN_IM_START;
+        for (int i = 0; i < n_sys_role; i++) prompt_ids[pos++] = sys_role_toks[i];
+        for (int i = 0; i < n_sys_text; i++) prompt_ids[pos++] = sys_text_toks[i];
+        prompt_ids[pos++] = SMOLVLM_TOKEN_EOS;
+        for (int i = 0; i < n_newline; i++) prompt_ids[pos++] = nl_toks[i];
+    }
+
+    /* User turn */
     prompt_ids[pos++] = SMOLVLM_TOKEN_IM_START;
     for (int i = 0; i < n_user; i++) prompt_ids[pos++] = user_toks[i];
     prompt_ids[pos++] = SMOLVLM_TOKEN_FAKE_IMAGE;
@@ -384,6 +412,7 @@ char *smolvlm_generate(smolvlm_ctx_t *ctx, const char *image_path,
     for (int i = 0; i < n_newline; i++) prompt_ids[pos++] = nl_toks[i];
     for (int i = 0; i < n_assistant; i++) prompt_ids[pos++] = asst_toks[i];
 
+    free(sys_role_toks); free(sys_text_toks);
     free(user_toks); free(prompt_toks); free(nl_toks); free(asst_toks);
 
     if (qwen_verbose >= 1) {

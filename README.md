@@ -77,6 +77,7 @@ Required:
 
 Options:
   -p <text>         Text prompt (default: "Describe this image.")
+  --system-prompt <text>  System prompt for instruct model
   -t <n>            Number of threads (default: all CPUs)
   --max-tokens <n>  Maximum tokens to generate (default: 256)
   --debug           Verbose debug output
@@ -98,6 +99,9 @@ Options:
 
 # Silent mode (just the text, no status on stderr)
 ./smolvlm -d smolvlm-instruct -i photo.jpg --silent
+
+# With a system prompt
+./smolvlm -d smolvlm-instruct -i photo.jpg --system-prompt "You are a helpful assistant." -p "What is this?"
 ```
 
 ## Testing

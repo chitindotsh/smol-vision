@@ -41,6 +41,7 @@ Architecture/background references:
   - final inference summary line
 - `--debug` enables verbose internal diagnostics (image dimensions, per-layer info).
 - `-p` sets the text prompt (default: "Describe this image.").
+- `--system-prompt` sets an optional system prompt (prepended as a System turn).
 - `-i` is required and accepts any image format supported by stb_image
   (PNG, JPG, BMP, PNM, TGA, GIF, PSD).
 - `-d` is required and points to the model directory.
@@ -177,14 +178,24 @@ Inference: <ms> ms, <tokens> tokens (<tok/s> tok/s, encoding: <ms>ms, decoding: 
 
 ## Prompt Template
 
-SmolVLM chat format:
+SmolVLM chat format (without system prompt):
 ```
 <|im_start|>User:<fake_token_around_image><image>x81<fake_token_around_image>{prompt}<end_of_utterance>\nAssistant:
 ```
 
-Token IDs:
+With `--system-prompt`:
+```
+<|im_start|>System:{system_prompt}<end_of_utterance>\n<|im_start|>User:<fake_token_around_image><image>x81<fake_token_around_image>{prompt}<end_of_utterance>\nAssistant:
+```
+
+Token IDs (without system prompt):
 ```
 [1] "User:" [49152] [49153 x 81] [49152] {prompt tokens} [49154] "\n" "Assistant:"
+```
+
+Token IDs (with system prompt):
+```
+[1] "System:" {sys tokens} [49154] "\n" [1] "User:" [49152] [49153 x 81] [49152] {prompt tokens} [49154] "\n" "Assistant:"
 ```
 
 Where `<image>` positions (49153) are replaced with vision encoder output embeddings.

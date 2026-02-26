@@ -25,6 +25,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  -i <file>         Input image (PNG, JPG, BMP, PNM, TGA, GIF, PSD)\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  -p <text>         Text prompt (default: \"Describe this image.\")\n");
+    fprintf(stderr, "  --system-prompt <text>  System prompt for instruct model\n");
     fprintf(stderr, "  -t <n>            Number of threads (default: all CPUs)\n");
     fprintf(stderr, "  --max-tokens <n>  Maximum tokens to generate (default: 256)\n");
     fprintf(stderr, "  --debug           Verbose debug output\n");
@@ -36,6 +37,7 @@ int main(int argc, char **argv) {
     const char *model_dir = NULL;
     const char *image_path = NULL;
     const char *prompt = "Describe this image.";
+    const char *system_prompt = NULL;
     int verbosity = 1;
     int n_threads = 0;
     int max_tokens = 256;
@@ -47,6 +49,8 @@ int main(int argc, char **argv) {
             image_path = argv[++i];
         } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             prompt = argv[++i];
+        } else if (strcmp(argv[i], "--system-prompt") == 0 && i + 1 < argc) {
+            system_prompt = argv[++i];
         } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
             n_threads = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--max-tokens") == 0 && i + 1 < argc) {
@@ -89,7 +93,7 @@ int main(int argc, char **argv) {
         smolvlm_set_token_callback(ctx, stream_token, NULL);
 
     /* Generate */
-    char *text = smolvlm_generate(ctx, image_path, prompt, max_tokens);
+    char *text = smolvlm_generate(ctx, image_path, prompt, system_prompt, max_tokens);
 
     if (text) {
         if (emit_tokens)
