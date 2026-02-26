@@ -1,11 +1,9 @@
 *.o
-qwen_asr
+smolvlm
+smolvlm-instruct/
+test_smolvlm_images
+test_images/
 venv/
-venv312/
-qwen3-asr-0.6b/
-qwen3-asr-1.7b/
 __pycache__/
 .DS_Store
-samples/extra
-Qwen3-ASR
 TODO.md

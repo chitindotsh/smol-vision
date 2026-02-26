@@ -1,4 +1,4 @@
-# qwen_asr — Qwen3-ASR Pure C Inference Engine
+# smol-vision — SmolVLM-Instruct Pure C Inference Engine
 # Makefile
 
 CC = gcc
@@ -9,33 +9,36 @@ LDFLAGS = -lm -lpthread
 UNAME_S := $(shell uname -s)
 
 # Source files
-SRCS = qwen_asr.c qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c qwen_asr_kernels_avx.c qwen_asr_audio.c qwen_asr_encoder.c qwen_asr_decoder.c qwen_asr_tokenizer.c qwen_asr_safetensors.c
+SRCS = smolvlm.c smolvlm_vision.c smolvlm_decoder.c smolvlm_image.c smolvlm_tokenizer.c \
+       common_kernels.c common_kernels_generic.c common_kernels_neon.c \
+       common_kernels_avx.c common_safetensors.c
 OBJS = $(SRCS:.c=.o)
-MAIN = main.c
-TARGET = qwen_asr
+MAIN = smolvlm_main.c
+TARGET = smolvlm
 
 # Debug build flags
 DEBUG_CFLAGS = -Wall -Wextra -g -O0 -DDEBUG -fsanitize=address
 
-.PHONY: all clean debug info help blas test test-stream-cache
+.PHONY: all clean debug info help blas test-images
 
 # Default: show available targets
 all: help
 
 help:
-	@echo "qwen_asr — Qwen3-ASR Pure C Inference - Build Targets"
+	@echo "smol-vision — SmolVLM-Instruct Pure C Inference Engine"
 	@echo ""
-	@echo "Choose a backend:"
-	@echo "  make blas     - With BLAS acceleration (Accelerate/OpenBLAS)"
+	@echo "Build targets:"
+	@echo "  make blas          - Build with BLAS (Accelerate/OpenBLAS)"
+	@echo "  make debug         - Debug build with AddressSanitizer"
 	@echo ""
-	@echo "Other targets:"
-	@echo "  make debug    - Debug build with AddressSanitizer"
-	@echo "  make test     - Run regression suite (requires ./qwen_asr and model files)"
-	@echo "  make test-stream-cache - Run stream cache on/off equivalence check"
-	@echo "  make clean    - Remove build artifacts"
-	@echo "  make info     - Show build configuration"
+	@echo "Test targets:"
+	@echo "  make test-images   - Run image loading test suite"
 	@echo ""
-	@echo "Example: make blas && ./qwen_asr -d model_dir -i audio.wav"
+	@echo "Other:"
+	@echo "  make clean         - Remove all build artifacts"
+	@echo "  make info          - Show build configuration"
+	@echo ""
+	@echo "Example: make blas && ./smolvlm -d smolvlm-instruct -i image.jpg -p 'Describe'"
 
 # =============================================================================
 # Backend: blas (Accelerate on macOS, OpenBLAS on Linux)
@@ -51,15 +54,15 @@ blas:
 	@$(MAKE) clean
 	@$(MAKE) $(TARGET) CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
 	@echo ""
-	@echo "Built with BLAS backend"
+	@echo "Built smolvlm with BLAS backend"
 
 # =============================================================================
 # Build rules
 # =============================================================================
-$(TARGET): $(OBJS) main.o
+$(TARGET): $(OBJS) smolvlm_main.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-%.o: %.c qwen_asr.h qwen_asr_kernels.h
+%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Debug build
@@ -70,10 +73,20 @@ debug:
 	@$(MAKE) $(TARGET) CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
 
 # =============================================================================
+# Test
+# =============================================================================
+TEST_IMG_BIN = test_smolvlm_images
+test-images: smolvlm_image.o test_smolvlm_images.o
+	$(CC) $(CFLAGS_BASE) -o $(TEST_IMG_BIN) $^ -lm
+	./$(TEST_IMG_BIN) test_images
+
+test_smolvlm_images.o: test_smolvlm_images.c smolvlm.h stb_image.h
+
+# =============================================================================
 # Utilities
 # =============================================================================
 clean:
-	rm -f $(OBJS) main.o $(TARGET)
+	rm -f $(OBJS) smolvlm_main.o test_smolvlm_images.o $(TARGET) $(TEST_IMG_BIN)
 
 info:
 	@echo "Platform: $(UNAME_S)"
@@ -85,20 +98,17 @@ else
 	@echo "Backend: blas (OpenBLAS)"
 endif
 
-test:
-	./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-1.7b
-
 # =============================================================================
 # Dependencies
 # =============================================================================
-qwen_asr.o: qwen_asr.c qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h qwen_asr_audio.h qwen_asr_tokenizer.h
-qwen_asr_kernels.o: qwen_asr_kernels.c qwen_asr_kernels.h qwen_asr_kernels_impl.h
-qwen_asr_kernels_generic.o: qwen_asr_kernels_generic.c qwen_asr_kernels_impl.h
-qwen_asr_kernels_neon.o: qwen_asr_kernels_neon.c qwen_asr_kernels_impl.h
-qwen_asr_kernels_avx.o: qwen_asr_kernels_avx.c qwen_asr_kernels_impl.h
-qwen_asr_audio.o: qwen_asr_audio.c qwen_asr_audio.h
-qwen_asr_encoder.o: qwen_asr_encoder.c qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h
-qwen_asr_decoder.o: qwen_asr_decoder.c qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h
-qwen_asr_tokenizer.o: qwen_asr_tokenizer.c qwen_asr_tokenizer.h
-qwen_asr_safetensors.o: qwen_asr_safetensors.c qwen_asr_safetensors.h
-main.o: main.c qwen_asr.h qwen_asr_kernels.h
+smolvlm.o: smolvlm.c smolvlm.h smolvlm_tokenizer.h common_kernels.h common_safetensors.h
+smolvlm_vision.o: smolvlm_vision.c smolvlm.h common_kernels.h common_safetensors.h
+smolvlm_decoder.o: smolvlm_decoder.c smolvlm.h common_kernels.h common_safetensors.h
+smolvlm_image.o: smolvlm_image.c smolvlm.h stb_image.h
+smolvlm_tokenizer.o: smolvlm_tokenizer.c smolvlm_tokenizer.h
+smolvlm_main.o: smolvlm_main.c smolvlm.h common_kernels.h
+common_kernels.o: common_kernels.c common_kernels.h common_kernels_impl.h
+common_kernels_generic.o: common_kernels_generic.c common_kernels_impl.h
+common_kernels_neon.o: common_kernels_neon.c common_kernels_impl.h
+common_kernels_avx.o: common_kernels_avx.c common_kernels_impl.h
+common_safetensors.o: common_safetensors.c common_safetensors.h
