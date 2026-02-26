@@ -3,13 +3,12 @@
 #
 # Usage:
 #   ./download_model.sh
-#   ./download_model.sh --model small
-#   ./download_model.sh --model large --dir my-model-dir
 #   ./download_model.sh --model smolvlm
+#   ./download_model.sh --model smolvlm --dir my-model-dir
 #
 # Options:
-#   --model small|large|smolvlm   Choose model variant
-#   --dir DIR                     Override output directory
+#   --model MODEL   Choose model variant (see list below)
+#   --dir DIR       Override output directory
 
 set -e
 
@@ -17,7 +16,10 @@ MODEL_CHOICE=""
 MODEL_DIR=""
 
 usage() {
-    echo "Usage: $0 [--model small|large|smolvlm] [--dir DIR]"
+    echo "Usage: $0 [--model MODEL] [--dir DIR]"
+    echo ""
+    echo "Available models:"
+    echo "  smolvlm   SmolVLM-Instruct (2.2B vision-language model)"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -44,27 +46,17 @@ done
 
 choose_model_interactive() {
     echo "Select model to download:"
-    echo "  1) small (Qwen3-ASR-0.6B)"
-    echo "  2) large (Qwen3-ASR-1.7B)"
-    echo "  3) smolvlm (SmolVLM-Instruct 2.2B)"
+    echo "  1) smolvlm (SmolVLM-Instruct 2.2B)"
     echo ""
     while true; do
-        read -r -p "Enter choice [1/2/3]: " ans
+        read -r -p "Enter choice [1]: " ans
         case "$ans" in
-            1|small|Small|SMALL)
-                MODEL_CHOICE="small"
-                return
-                ;;
-            2|large|Large|LARGE)
-                MODEL_CHOICE="large"
-                return
-                ;;
-            3|smolvlm|SmolVLM|SMOLVLM)
+            1|smolvlm|SmolVLM|SMOLVLM|"")
                 MODEL_CHOICE="smolvlm"
                 return
                 ;;
             *)
-                echo "Please choose 1 (small), 2 (large), or 3 (smolvlm)."
+                echo "Please choose 1 (smolvlm)."
                 ;;
         esac
     done
@@ -75,30 +67,6 @@ if [[ -z "$MODEL_CHOICE" ]]; then
 fi
 
 case "$MODEL_CHOICE" in
-    small|0.6b|0.6B)
-        MODEL_ID="Qwen/Qwen3-ASR-0.6B"
-        if [[ -z "$MODEL_DIR" ]]; then MODEL_DIR="qwen3-asr-0.6b"; fi
-        FILES=(
-            "config.json"
-            "generation_config.json"
-            "model.safetensors"
-            "vocab.json"
-            "merges.txt"
-        )
-        ;;
-    large|1.7b|1.7B)
-        MODEL_ID="Qwen/Qwen3-ASR-1.7B"
-        if [[ -z "$MODEL_DIR" ]]; then MODEL_DIR="qwen3-asr-1.7b"; fi
-        FILES=(
-            "config.json"
-            "generation_config.json"
-            "model.safetensors.index.json"
-            "model-00001-of-00002.safetensors"
-            "model-00002-of-00002.safetensors"
-            "vocab.json"
-            "merges.txt"
-        )
-        ;;
     smolvlm|SmolVLM)
         MODEL_ID="HuggingFaceTB/SmolVLM-Instruct"
         if [[ -z "$MODEL_DIR" ]]; then MODEL_DIR="smolvlm-instruct"; fi
@@ -116,7 +84,7 @@ case "$MODEL_CHOICE" in
         ;;
     *)
         echo "Invalid --model value: $MODEL_CHOICE"
-        echo "Use: --model small, --model large, or --model smolvlm"
+        usage
         exit 1
         ;;
 esac
