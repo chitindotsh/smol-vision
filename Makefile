@@ -26,7 +26,7 @@ SMOLVLM_TARGET = smolvlm
 # Debug build flags
 DEBUG_CFLAGS = -Wall -Wextra -g -O0 -DDEBUG -fsanitize=address
 
-.PHONY: all clean clean-smolvlm debug info help blas blas-smolvlm debug-smolvlm test test-stream-cache
+.PHONY: all clean clean-smolvlm debug info help blas blas-smolvlm debug-smolvlm test test-stream-cache test-smolvlm-images
 
 # Default: show available targets
 all: help
@@ -43,12 +43,13 @@ help:
 	@echo "  make debug-smolvlm   - SmolVLM-Instruct debug build"
 	@echo ""
 	@echo "Other:"
-	@echo "  make test            - Run ASR regression suite"
-	@echo "  make clean           - Remove all build artifacts"
-	@echo "  make info            - Show build configuration"
+	@echo "  make test                - Run ASR regression suite"
+	@echo "  make test-smolvlm-images - Run SmolVLM image loading tests"
+	@echo "  make clean               - Remove all build artifacts"
+	@echo "  make info                - Show build configuration"
 	@echo ""
 	@echo "ASR example:    make blas && ./qwen_asr -d model_dir -i audio.wav"
-	@echo "SmolVLM example: make blas-smolvlm && ./smolvlm -d smolvlm-instruct -i image.pnm -p 'Describe'"
+	@echo "SmolVLM example: make blas-smolvlm && ./smolvlm -d smolvlm-instruct -i image.jpg -p 'Describe'"
 
 # =============================================================================
 # Backend: blas — ASR (Accelerate on macOS, OpenBLAS on Linux)
@@ -112,7 +113,7 @@ debug-smolvlm:
 # Utilities
 # =============================================================================
 clean:
-	rm -f $(OBJS) $(SMOLVLM_OBJS) main.o smolvlm_main.o $(TARGET) $(SMOLVLM_TARGET)
+	rm -f $(OBJS) $(SMOLVLM_OBJS) main.o smolvlm_main.o test_smolvlm_images.o $(TARGET) $(SMOLVLM_TARGET) $(TEST_SMOLVLM_IMG)
 
 clean-smolvlm:
 	rm -f $(SMOLVLM_OBJS) smolvlm_main.o $(SMOLVLM_TARGET)
@@ -129,6 +130,13 @@ endif
 
 test:
 	./asr_regression.py --binary ./qwen_asr --model-dir qwen3-asr-1.7b
+
+TEST_SMOLVLM_IMG = test_smolvlm_images
+test-smolvlm-images: smolvlm_image.o test_smolvlm_images.o
+	$(CC) $(CFLAGS_BASE) -o $(TEST_SMOLVLM_IMG) $^ -lm
+	./$(TEST_SMOLVLM_IMG) test_images
+
+test_smolvlm_images.o: test_smolvlm_images.c smolvlm.h stb_image.h
 
 # =============================================================================
 # Dependencies — ASR
@@ -151,6 +159,6 @@ main.o: main.c qwen_asr.h qwen_asr_kernels.h
 smolvlm.o: smolvlm.c smolvlm.h smolvlm_tokenizer.h qwen_asr_kernels.h qwen_asr_safetensors.h
 smolvlm_vision.o: smolvlm_vision.c smolvlm.h qwen_asr_kernels.h qwen_asr_safetensors.h
 smolvlm_decoder.o: smolvlm_decoder.c smolvlm.h qwen_asr_kernels.h qwen_asr_safetensors.h
-smolvlm_image.o: smolvlm_image.c smolvlm.h
+smolvlm_image.o: smolvlm_image.c smolvlm.h stb_image.h
 smolvlm_tokenizer.o: smolvlm_tokenizer.c smolvlm_tokenizer.h
 smolvlm_main.o: smolvlm_main.c smolvlm.h qwen_asr_kernels.h

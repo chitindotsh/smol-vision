@@ -1,112 +1,19 @@
 /*
- * smolvlm_image.c - PNM image loading, resize, and normalization
+ * smolvlm_image.c - Image loading via stb_image, resize, and normalization
  *
- * Supports PPM P6 (binary RGB) format.
+ * Supports PNG, JPG, BMP, GIF, PSD, TGA, HDR, PIC, PNM (PPM/PGM) via stb_image.
  * Output: channel-first float [3, H, W] normalized to [-1, 1].
  */
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_HDR          /* skip HDR loader (we don't need float images) */
+#define STBI_NO_LINEAR       /* skip linear float conversion */
+#include "stb_image.h"
 
 #include "smolvlm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-
-/* ========================================================================
- * PPM P6 Parser
- * ======================================================================== */
-
-static void skip_whitespace_and_comments(FILE *f) {
-    int c;
-    while ((c = fgetc(f)) != EOF) {
-        if (c == '#') {
-            /* Skip comment line */
-            while ((c = fgetc(f)) != EOF && c != '\n')
-                ;
-        } else if (!isspace(c)) {
-            ungetc(c, f);
-            return;
-        }
-    }
-}
-
-static int read_ppm_int(FILE *f) {
-    skip_whitespace_and_comments(f);
-    int val = 0;
-    int c;
-    while ((c = fgetc(f)) != EOF && isdigit(c)) {
-        val = val * 10 + (c - '0');
-    }
-    /* The character after the number is whitespace, consumed */
-    return val;
-}
-
-/*
- * Load PPM P6 file: binary RGB image.
- * Returns pixel data as [H * W * 3] uint8 array (row-major, interleaved RGB).
- */
-static unsigned char *load_ppm(const char *path, int *out_w, int *out_h) {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "smolvlm_image: cannot open %s\n", path);
-        return NULL;
-    }
-
-    /* Read magic */
-    char magic[3];
-    if (fread(magic, 1, 2, f) != 2 || magic[0] != 'P' || magic[1] != '6') {
-        fprintf(stderr, "smolvlm_image: %s is not a PPM P6 file (got '%c%c')\n",
-                path, magic[0], magic[1]);
-        fclose(f);
-        return NULL;
-    }
-
-    int w = read_ppm_int(f);
-    int h = read_ppm_int(f);
-    int maxval = read_ppm_int(f);
-    /* After maxval, exactly one whitespace character before pixel data */
-
-    if (w <= 0 || h <= 0 || maxval <= 0 || maxval > 65535) {
-        fprintf(stderr, "smolvlm_image: invalid PPM header: %dx%d maxval=%d\n", w, h, maxval);
-        fclose(f);
-        return NULL;
-    }
-
-    size_t npixels = (size_t)w * h * 3;
-    unsigned char *pixels = (unsigned char *)malloc(npixels);
-    if (!pixels) {
-        fclose(f);
-        return NULL;
-    }
-
-    if (maxval <= 255) {
-        /* 8-bit per channel */
-        if (fread(pixels, 1, npixels, f) != npixels) {
-            fprintf(stderr, "smolvlm_image: short read in %s\n", path);
-            free(pixels);
-            fclose(f);
-            return NULL;
-        }
-    } else {
-        /* 16-bit per channel: read and downscale */
-        unsigned char *raw = (unsigned char *)malloc(npixels * 2);
-        if (!raw || fread(raw, 1, npixels * 2, f) != npixels * 2) {
-            free(raw);
-            free(pixels);
-            fclose(f);
-            return NULL;
-        }
-        for (size_t i = 0; i < npixels; i++) {
-            int val16 = (raw[i * 2] << 8) | raw[i * 2 + 1];
-            pixels[i] = (unsigned char)(val16 * 255 / maxval);
-        }
-        free(raw);
-    }
-
-    fclose(f);
-    *out_w = w;
-    *out_h = h;
-    return pixels;
-}
 
 /* ========================================================================
  * Bilinear Resize
@@ -153,13 +60,21 @@ static float *bilinear_resize(const unsigned char *src, int src_w, int src_h,
  * ======================================================================== */
 
 float *smolvlm_load_image(const char *path, int target_size, int *out_w, int *out_h) {
-    int w, h;
-    unsigned char *pixels = load_ppm(path, &w, &h);
-    if (!pixels) return NULL;
+    int w, h, channels;
+    unsigned char *pixels = stbi_load(path, &w, &h, &channels, 3);  /* force RGB */
+    if (!pixels) {
+        fprintf(stderr, "smolvlm_image: cannot load %s: %s\n", path, stbi_failure_reason());
+        return NULL;
+    }
+
+    if (qwen_verbose >= 2) {
+        fprintf(stderr, "  Image: %dx%d (%d channels) -> %dx%d\n",
+                w, h, channels, target_size, target_size);
+    }
 
     /* Bilinear resize to target_size x target_size */
     float *resized = bilinear_resize(pixels, w, h, target_size, target_size);
-    free(pixels);
+    stbi_image_free(pixels);
     if (!resized) return NULL;
 
     /* Convert to channel-first [3, target_size, target_size] and normalize to [-1, 1] */

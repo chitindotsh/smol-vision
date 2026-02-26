@@ -268,7 +268,7 @@ void smolvlm_decoder_prefill(smolvlm_ctx_t *ctx, const float *input_embeds, int 
 /* Decoder forward (single token, uses KV cache, returns greedy token ID) */
 int smolvlm_decoder_forward(smolvlm_ctx_t *ctx, const float *input_embed);
 
-/* Image loading: loads PNM, resizes, normalizes.
+/* Image loading via stb_image: loads PNG, JPG, BMP, PNM, TGA, GIF, PSD.
  * Returns [3, image_size, image_size] float array (caller must free).
  * Sets *out_w and *out_h to image_size. */
 float *smolvlm_load_image(const char *path, int target_size, int *out_w, int *out_h);

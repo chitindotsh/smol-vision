@@ -9,3 +9,7 @@ __pycache__/
 samples/extra
 Qwen3-ASR
 TODO.md
+smolvlm
+smolvlm-instruct/
+test_images/
+test_smolvlm_images

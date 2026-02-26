@@ -22,7 +22,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s -d <model_dir> -i <image.pnm> [options]\n\n", prog);
     fprintf(stderr, "Required:\n");
     fprintf(stderr, "  -d <dir>          Model directory (with *.safetensors, tokenizer.json)\n");
-    fprintf(stderr, "  -i <file>         Input image (PPM P6 format)\n");
+    fprintf(stderr, "  -i <file>         Input image (PNG, JPG, BMP, PNM, TGA, GIF, PSD)\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  -p <text>         Text prompt (default: \"Describe this image.\")\n");
     fprintf(stderr, "  -t <n>            Number of threads (default: all CPUs)\n");
