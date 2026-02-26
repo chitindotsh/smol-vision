@@ -1,14 +1,15 @@
 #!/bin/bash
-# Download Qwen3-ASR model files from HuggingFace.
+# Download model files from HuggingFace.
 #
 # Usage:
 #   ./download_model.sh
 #   ./download_model.sh --model small
 #   ./download_model.sh --model large --dir my-model-dir
+#   ./download_model.sh --model smolvlm
 #
 # Options:
-#   --model small|large   Choose 0.6B (small) or 1.7B (large)
-#   --dir DIR             Override output directory
+#   --model small|large|smolvlm   Choose model variant
+#   --dir DIR                     Override output directory
 
 set -e
 
@@ -16,7 +17,7 @@ MODEL_CHOICE=""
 MODEL_DIR=""
 
 usage() {
-    echo "Usage: $0 [--model small|large] [--dir DIR]"
+    echo "Usage: $0 [--model small|large|smolvlm] [--dir DIR]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -42,12 +43,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 choose_model_interactive() {
-    echo "Select model size to download:"
+    echo "Select model to download:"
     echo "  1) small (Qwen3-ASR-0.6B)"
     echo "  2) large (Qwen3-ASR-1.7B)"
+    echo "  3) smolvlm (SmolVLM-Instruct 2.2B)"
     echo ""
     while true; do
-        read -r -p "Enter choice [1/2]: " ans
+        read -r -p "Enter choice [1/2/3]: " ans
         case "$ans" in
             1|small|Small|SMALL)
                 MODEL_CHOICE="small"
@@ -57,8 +59,12 @@ choose_model_interactive() {
                 MODEL_CHOICE="large"
                 return
                 ;;
+            3|smolvlm|SmolVLM|SMOLVLM)
+                MODEL_CHOICE="smolvlm"
+                return
+                ;;
             *)
-                echo "Please choose 1 (small) or 2 (large)."
+                echo "Please choose 1 (small), 2 (large), or 3 (smolvlm)."
                 ;;
         esac
     done
@@ -93,9 +99,24 @@ case "$MODEL_CHOICE" in
             "merges.txt"
         )
         ;;
+    smolvlm|SmolVLM)
+        MODEL_ID="HuggingFaceTB/SmolVLM-Instruct"
+        if [[ -z "$MODEL_DIR" ]]; then MODEL_DIR="smolvlm-instruct"; fi
+        FILES=(
+            "config.json"
+            "generation_config.json"
+            "preprocessor_config.json"
+            "tokenizer.json"
+            "tokenizer_config.json"
+            "special_tokens_map.json"
+            "model.safetensors.index.json"
+            "model-00001-of-00002.safetensors"
+            "model-00002-of-00002.safetensors"
+        )
+        ;;
     *)
         echo "Invalid --model value: $MODEL_CHOICE"
-        echo "Use: --model small or --model large"
+        echo "Use: --model small, --model large, or --model smolvlm"
         exit 1
         ;;
 esac
