@@ -1,4 +1,6 @@
 *.o
+*.dylib
+*.so
 qwen_asr
 venv/
 venv312/
