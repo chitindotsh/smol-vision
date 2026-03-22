@@ -9,7 +9,7 @@ LDFLAGS = -lm -lpthread
 UNAME_S := $(shell uname -s)
 
 # Source files
-SRCS = qwen_asr.c qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c qwen_asr_kernels_avx.c qwen_asr_audio.c qwen_asr_encoder.c qwen_asr_decoder.c qwen_asr_tokenizer.c qwen_asr_safetensors.c qwen25_omni.c qwen25_omni_encoder.c qwen25_omni_decoder.c
+SRCS = qwen_asr.c qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c qwen_asr_kernels_avx.c qwen_asr_audio.c qwen_asr_encoder.c qwen_asr_decoder.c qwen_asr_tokenizer.c qwen_asr_safetensors.c qwen25_omni.c qwen25_omni_encoder.c qwen25_omni_decoder.c nomic_embed.c nomic_kernels_neon.c
 OBJS = $(SRCS:.c=.o)
 MAIN = main.c
 TARGET = qwen_asr
@@ -110,4 +110,6 @@ qwen_asr_safetensors.o: qwen_asr_safetensors.c qwen_asr_safetensors.h
 qwen25_omni.o: qwen25_omni.c qwen25_omni.h qwen_asr_kernels.h qwen_asr_safetensors.h qwen_asr_audio.h qwen_asr_tokenizer.h
 qwen25_omni_encoder.o: qwen25_omni_encoder.c qwen25_omni.h qwen_asr_kernels.h qwen_asr_safetensors.h
 qwen25_omni_decoder.o: qwen25_omni_decoder.c qwen25_omni.h qwen_asr_kernels.h qwen_asr_safetensors.h
+nomic_embed.o: nomic_embed.c nomic_embed.h qwen_asr_kernels.h qwen_asr_safetensors.h qwen_asr_tokenizer.h
+nomic_kernels_neon.o: nomic_kernels_neon.c nomic_embed.h
 main.o: main.c qwen_asr.h qwen25_omni.h qwen_asr_kernels.h

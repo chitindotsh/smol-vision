@@ -1,4 +1,80 @@
-# Qwen3-ASR Pure C Implementation
+# smol-embedding
+
+A pure C inference engine for text embedding models, forked from [antirez/qwen-asr](https://github.com/antirez/qwen-asr). This branch adds **nomic-embed-text** support: a batched, FFI-ready embedding engine designed to run as a resident microservice called from a Rust host via FFI.
+
+## nomic-embed-text Engine
+
+The nomic engine implements a BERT-variant encoder (bidirectional attention, RoPE, SwiGLU, RMSNorm) with **4-bit quantized weights** (Q4 packed with f16 block scales) for memory-bandwidth efficiency. All activation buffers are pre-allocated at load time — `nomic_embed_batch` performs zero dynamic allocations on the forward-pass hot path.
+
+### FFI API
+
+```c
+#include "nomic_embed.h"
+
+/* Load model, pre-allocate buffers for up to 32 strings x 512 tokens */
+nomic_ctx_t *ctx = nomic_load("nomic-embed-text-q4", 32, 512);
+
+/* Embed a batch of strings */
+const char *strings[] = {"hello world", "another sentence"};
+float embeddings[2 * 768];
+nomic_embed_batch(ctx, strings, 2, embeddings);
+
+nomic_free(ctx);
+```
+
+### Architecture
+
+| Component | Detail |
+|-----------|--------|
+| Model | nomic-embed-text (BERT-variant encoder) |
+| Hidden dim | 768 |
+| Layers | 12 |
+| Attention | Bidirectional (no causal mask), 12 heads |
+| Position encoding | NeoX split-half RoPE |
+| FFN | SwiGLU (gate + up + down projections) |
+| Normalization | RMSNorm |
+| Weight format | Q4 packed (2 nibbles/byte) + f16 block scales |
+| Pooling | Mean pooling across token dimension |
+| Output | 768-dim float32 embedding per string |
+
+### NEON Kernels
+
+Two custom ARM NEON kernels are provided in `nomic_kernels_neon.c`:
+
+- **Q4 Dequantization** (`nomic_dequantize_q4_neon`): Unpacks 4-bit nibble pairs, subtracts zero-point, widens through s8→s16→s32→f32, and multiplies by the per-block f16 scale. Processes 32 weights per NEON iteration.
+- **Mean Pooling** (`nomic_mean_pool_neon`): Accumulates hidden states across the token dimension per sequence using 8-wide NEON vector adds, then divides by sequence length.
+
+Both kernels include scalar fallbacks for non-ARM builds.
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `nomic_embed.h` | Public header: context struct, Q4 weight types, FFI API |
+| `nomic_embed.c` | Model loading, transformer forward pass, batch embedding |
+| `nomic_kernels_neon.c` | NEON dequantization and mean pooling kernels |
+| `nomic_test.py` | Kernel correctness test suite (ctypes + numpy) |
+
+### Testing
+
+```bash
+# Run kernel correctness tests (builds a shared library, tests via ctypes)
+python3 nomic_test.py
+
+# Force rebuild of test library
+python3 nomic_test.py --rebuild
+```
+
+### Design Principles
+
+- **Zero hot-path allocations**: All buffers sized at `nomic_load` for `max_batch_size * max_seq_len`.
+- **Kernel reuse**: Bidirectional attention, RoPE, RMSNorm, SiLU, and BLAS matmul are shared with the ASR engine.
+- **Isolated files**: nomic code lives in its own files; existing qwen sources are not modified.
+- **Q4 + BLAS hybrid**: Weights are dequantized into a pre-allocated scratch buffer, then multiplied via Accelerate/OpenBLAS sgemm.
+
+---
+
+## Qwen3-ASR (Original Engine)
 
 *Note*: This is an experimental branch implementing a "thinker" mode using Omni models. Read THINKER.md for more details. Use the upstream branch https://github.com/antirez/qwen-asr for stability.
 
